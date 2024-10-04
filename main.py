@@ -9,14 +9,14 @@ urls = ["rtsp://maglab:magcat@connor.maglab:8554/Camera1_sub",
 def play_thread(event_all, event_in, event_out, span, pos, url):
     player = mpv.MPV()
     player.border = "no"
-    player.border = "no"
+    player.keepaspect = "no"
     geo_str = "50%x100%"
     if (pos == 0):
         geo_str = f"{geo_str}+0+0"
     elif (pos == 1):
         geo_str = f"{geo_str}-0-0"
     player.geometry = geo_str
-    player.keepaspect = "no"
+    player.ao = "pulseaudio"
     player.play(url)
     player.wait_until_playing()
     event_out.set()
@@ -31,11 +31,16 @@ def play_thread(event_all, event_in, event_out, span, pos, url):
     finally:
         player.terminate()
 
-def handle_player(p_cnt, event_all, thr, evt):
-    next_pi = (p_cnt + 2) % 4
+def handle_player(p_cnt, event_all, thr, evt, init_d = True):
+    # inital player logic
+    if (init_d):
+        next_pi = (p_cnt + 2) % 4
+    else:
+        next_pi = p_cnt
+        p_cnt = (p_cnt + 2) % 4
     pos = p_cnt % 2
     url = urls[pos]
-    print(f"Starting new player: {next_pi}")
+    print(f"Starting player: {next_pi}")
     thr[next_pi] = threading.Thread(target=play_thread, args=(
         event_all,
         evt[next_pi],
@@ -55,15 +60,15 @@ def main():
     thr = [None] * 4
 
     try: 
-        handle_player(0 + 2, event_all, thr, evt)
-        handle_player(1 + 2, event_all, thr, evt)
+        handle_player(0, event_all, thr, evt, False)
+        handle_player(1, event_all, thr, evt, False)
         time_cnt = 0
         p_cnt = 0
         while not event_all.is_set():
             try:
                 event_all.wait(10)
                 time_cnt += 1
-                if (time_cnt >= 3):
+                if (time_cnt >= 30):
                     time_cnt = 0
                     handle_player(p_cnt, event_all, thr, evt)
                     thr[p_cnt].join()
@@ -72,7 +77,7 @@ def main():
                 event_all.set()
                 raise
     except KeyboardInterrupt:
-        print("caught interrupt.")
+        print("Caught interrupt.")
     
     for t in thr:
         if not t == None:
