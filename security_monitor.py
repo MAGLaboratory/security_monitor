@@ -28,8 +28,12 @@ def play_thread(event_all, event_in, event_out, span, pos, url):
                 continue
             except mpv.ShutdownError:
                 event_all.set()
+            except KeyboardInterrupt:
+                continue
     finally:
         player.terminate()
+
+    del player
 
 def handle_player(p_cnt, event_all, thr, evt, init_d = True):
     # inital player logic
