@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import mpv
-import threading
+import multiprocessing
 
 urls = ["rtsp://maglab:magcat@connor.maglab:8554/Camera1_sub",
         "rtsp://maglab:magcat@connor.maglab:8554/Camera2_sub"]
@@ -41,7 +41,7 @@ def handle_player(p_cnt, event_all, thr, evt, init_d = True):
     pos = p_cnt % 2
     url = urls[pos]
     print(f"Starting player: {next_pi}")
-    thr[next_pi] = threading.Thread(target=play_thread, args=(
+    thr[next_pi] = multiprocessing.Process(target=play_thread, args=(
         event_all,
         evt[next_pi],
         evt[p_cnt],
@@ -55,8 +55,8 @@ def main():
     
     print("Start")
     
-    event_all = threading.Event()
-    evt = [threading.Event() for _ in range(4)]
+    event_all = multiprocessing.Event()
+    evt = [multiprocessing.Event() for _ in range(4)]
     thr = [None] * 4
 
     try: 
