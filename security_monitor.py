@@ -12,12 +12,16 @@ from enum import Enum
 from dataclasses import dataclass
 from dataclasses_json import dataclass_json
 
+# Helper Functions
 def gen_pos(div, pos):
     # assumes that these values were already checked
+    # position aligned to the left
     if (pos == 0):
         pos_str = "+0"
+    # position in the center
     elif (pos < div-1):
         pos_str = f"+{100*pos//div}%"
+    # position aligned to the right
     else:
         pos_str = "-0"
 
@@ -42,43 +46,53 @@ def gen_geo_str(colDiv, rowDiv, colPos, rowPos):
 
     return geo_str
 
+# Security Monitor Windowing and Splitting
 class SecurityMonitorX2():
+    # TODO use queue for return instead
     urls = ["rtsp://maglab:magcat@connor.maglab:8554/Camera1_sub",
             "rtsp://maglab:magcat@connor.maglab:8554/Camera2_sub"]
-    
+
+    # initialize with an event
     def __init__(self, quit_event):
-        self.event_all = quit_event
+        self._event_all = quit_event
     
-    def play_thread(self, event_in, event_out, span, pos, url):
+    # this thread actually contains the mpv stream player
+    def _play_thread(self, event_in, event_out, span, pos, url):
         player = mpv.MPV()
+        # a series of configuration options that make the player act like a
+        # security monitor
         player.border = "no"
         player.keepaspect = "no"
-        geo_str = gen_geo_str(2,1,pos,0)
-        player.geometry = geo_str
         player.ao = "pulseaudio"
         player.profile = "low-latency"
+        geo_str = gen_geo_str(2,1,pos,0)
+        player.geometry = geo_str
+        # enter the camera URL and wait until it starts to play
         player.play(url)
         player.wait_until_playing()
+        # set the output event to terminate the player behind this one
         event_out.set()
+        logging.info("Signaling player start.")
         try:
-            while not self.event_all.is_set() and not event_in.is_set():
+            while not self._event_all.is_set() and not event_in.is_set():
                 try:
                     player.wait_for_event(None, timeout=1)
-                    logging.debug(f".{pos}")
                 except TimeoutError:
+                    # this is normal.  the function should be timing out.
                     continue
                 except mpv.ShutdownError:
-                    self.event_all.set()
+                    logging.error("Unexpected player shutdown.  Shutting down.")
+                    self._event_all.set()
                 except KeyboardInterrupt:
                     logging.warn("Player caught Keyboard Interrupt.")
                     continue
         finally:
-            logging.debug("Stopping player.")
+            logging.info("Stopping player.")
             player.terminate()
             del player
     
-    
-    def handle_player(self, p_cnt, init_d = True):
+    # helper function to spawn a player
+    def _handle_player(self, p_cnt, init_d = True):
         # inital player logic
         if (init_d):
             next_pi = (p_cnt + 2) % 4
@@ -88,7 +102,7 @@ class SecurityMonitorX2():
         pos = p_cnt % 2
         url = self.urls[pos]
         logging.info(f"Starting player: {next_pi}")
-        self.thr[next_pi] = multiprocessing.Process(target=self.play_thread, args=(
+        self.thr[next_pi] = multiprocessing.Process(target=self._play_thread, args=(
             self.evt[next_pi],
             self.evt[p_cnt],
             0,
@@ -97,29 +111,29 @@ class SecurityMonitorX2():
         self.thr[next_pi].daemon = True
         self.evt[next_pi].clear()
         self.thr[next_pi].start()
-    
+   
+    # main / run function within the class
     def main(self):
-        
         logging.info("Starting 2x security monitor")
 
         self.evt = [multiprocessing.Event() for _ in range(4)]
         self.thr = [None] * 4
-        self.event_w = multiprocessing.Event()
+        self.event_w = threading.Event()
     
         try: 
-            self.handle_player(0, False)
-            self.handle_player(1, False)
+            self._handle_player(0, False)
+            self._handle_player(1, False)
             time_cnt = 0
             p_cnt = 0
-            while not self.event_all.is_set():
+            while not self._event_all.is_set():
                 logging.debug("Splitter Waiting.")
-                self.event_w.wait(10)
                 time_cnt += 1
-                if (time_cnt >= 30):
+                if (time_cnt >= 3):
                     time_cnt = 0
-                    self.handle_player(p_cnt)
+                    self._handle_player(p_cnt)
                     self.thr[p_cnt].join()
                     p_cnt = (p_cnt + 1) % 4
+                self.event_w.wait(10)
         finally:
             logging.info("Waiting for player threads...")
             for t in self.thr:
@@ -128,6 +142,7 @@ class SecurityMonitorX2():
 
             logging.info("Stopping 2x security monitor.")
 
+# Top Level Security Monitor Management
 class MonitorTop(mqtt.Client):
     class MTState(Enum):
         PLAYING = 0
@@ -135,9 +150,14 @@ class MonitorTop(mqtt.Client):
         RESTART = 2
 
     def __init__(self, callbackAPIVersion):
+        # turns the screen off
         self.screenOff = threading.Event()
-        self.stopPlaying = threading.Event()
+        # stops video
+        self.stopPlaying = multiprocessing.Event()
+        # exits this program
         self.monitorExit = threading.Event()
+
+        # security monitor state
         self.mtstate = self.MTState.PLAYING
         self.last_mtstate = self.MTState.PLAYING
 
@@ -148,16 +168,17 @@ class MonitorTop(mqtt.Client):
     class config:
         name: str
 
-    def on_connect(self, obj, flag, reason, properties):
-        logging.info(f"mqtt connected: {reason}")
+    def on_connect(self, mqttc, obj, flag, reason, properties):
+        logging.info(f"MQTT connected: {reason}")
         self.subscribe("reporter/checkup_req")
         self.subscribe("secmon00/CMD_DisplayOn")
 
-    def on_message(self, obj, userdata, msg):
+    def on_message(self, mqttc, obj, msg):
         if msg.topic == "reporter/checkup_req":
             logging.info("Checkup requested.")
             # checkup
         elif msg.topic == "secmon00/CMD_DisplayOn":
+            # do 
             decoded = msg.payload.decode('utf-8')
             logging.info("Display Commanded: " + decoded)
             if (decoded.lower() == "false" or decoded == "0"):
@@ -167,7 +188,7 @@ class MonitorTop(mqtt.Client):
                 self.screenOff.clear()
                 self.stopPlaying.clear()
 
-    def on_log(self, obj, level, string):
+    def on_log(self, mqttc, obj, level, string):
         if level == mqtt.MQTT_LOG_DEBUG:
             logging.debug("PAHO MQTT DEBUG: " + string)
         elif level == mqtt.MQTT_LOG_INFO:
@@ -184,7 +205,7 @@ class MonitorTop(mqtt.Client):
 
     def main(self):
         logging.basicConfig(level="DEBUG")
-        self.event_w = multiprocessing.Event()
+        logging.info("Starting Security Monitor Program")
 
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
@@ -196,37 +217,60 @@ class MonitorTop(mqtt.Client):
             self.capable = False
         if not self.pm_able:
             logging.warn("Display is not DPMS capable.")
+        logging.debug(f"DPMS capable: {self.pm_able}")
 
         if self.pm_able:
+            logging.debug("Configuring DPMS.")
             # disable screensaver
+            #  timeout (setting timeout to 0 disables the screensaver)
+            #  interval
+            #  prefer blanking
+            #  allow exposures
             self.disp.set_screen_saver(0, 0, True, True)
             self.disp.sync()
             # enable DPMS
             self.disp.dpms_enable()
             self.disp.sync()
             # set DPMS timers to 0
+            #  standy  (setting to 0 disables)
+            #  suspend (setting to 0 disables)
+            #  off     (setting to 0 disables)
             self.disp.dpms_set_timeouts(0, 0, 0)
             self.disp.sync()
 
+        logging.info("Starting MQTT.")
+        # connect MQTT
+        #  host hal.maglab
+        #  port 1883 (default)
+        #  timeout 60
         self.connect("hal.maglab", 1883, 60)
         self.loop_start()
 
+        #  security monitor splitter / windower initialize
         sm2 = SecurityMonitorX2(self.stopPlaying)
         while not self.monitorExit.is_set():
-            logging.debug("Montior Loop")
+            logging.debug(f"Montior Loop State: {self.mtstate}")
             # execution
             if self.mtstate == self.MTState.PLAYING:
                 self.stopPlaying.clear()
-                self.disp.dpms_force_level(dpms.DPMSModeOn)
-                self.disp.sync()
+                if self.pm_able:
+                    logging.info("Turning Screen ON.")
+                    self.disp.dpms_force_level(dpms.DPMSModeOn)
+                    self.disp.sync()
+                logging.info("Calling Splitter.")
                 sm2.main()
-            # restart or stopped
+            #  restart or stopped
             if self.mtstate == self.MTState.STOPPED:
                 if self.last_mtstate == self.MTState.PLAYING:
-                    self.disp.dpms_force_level(dpms.DPMSModeOff)
-                    self.disp.sync()
+                    if self.pm_able:
+                        logging.info("Turning Screen Off.")
+                        self.disp.dpms_force_level(dpms.DPMSModeOff)
+                        self.disp.sync()
             if self.mtstate != self.MTState.PLAYING:
-                self.event_w.wait(10)
+                self.monitorExit.wait(1)
+
+            # save the last mtstate before computing state transitions
+            self.last_mtstate = self.mtstate
 
             # transitions
             if self.mtstate == self.MTState.PLAYING:
@@ -238,10 +282,9 @@ class MonitorTop(mqtt.Client):
                 if not self.screenOff.is_set():
                     self.mtstate = self.MTState.PLAYING
 
-            self.last_mtstate = self.mtstate
-
+        logging.info("Stopping MQTT.")
         self.loop_stop()
 
 if __name__ == "__main__":
-    monitor = MonitorTop(mqtt.CallbackAPIVersion.VERSION1)
+    monitor = MonitorTop(mqtt.CallbackAPIVersion.VERSION2)
     monitor.main()
