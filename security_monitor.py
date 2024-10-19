@@ -12,52 +12,87 @@ from enum import Enum
 from dataclasses import dataclass
 from dataclasses_json import dataclass_json
 
-# Helper Functions
-def gen_pos(div, pos):
-    # assumes that these values were already checked
-    # position aligned to the left
-    if (pos == 0):
-        pos_str = "+0"
-    # position in the center
-    elif (pos < div-1):
-        pos_str = f"+{100*pos//div}%"
-    # position aligned to the right
-    else:
-        pos_str = "-0"
-
-    return pos_str
-
-def gen_geo_str(colDiv, rowDiv, colPos, rowPos):
-    # divisions must be greater than 0
-    assert colDiv > 0
-    assert rowDiv > 0
-    # positions must be less than divisions
-    assert colPos < colDiv
-    assert rowPos < rowDiv
-
-    # column width calculation
-    geo_str=f"{100//colDiv}%"
-    # row width calculation
-    geo_str=f"{geo_str}x{100//rowDiv}%"
-    # column position
-    geo_str += gen_pos(colDiv, colPos)
-    # row position
-    geo_str += gen_pos(rowDiv, rowPos)
-
-    return geo_str
-
 # Security Monitor Windowing and Splitting
 class SecurityMonitorX2():
     # TODO use queue for return instead
     urls = ["rtsp://maglab:magcat@connor.maglab:8554/Camera1_sub",
             "rtsp://maglab:magcat@connor.maglab:8554/Camera2_sub"]
 
-    # initialize with an event
-    def __init__(self, quit_event):
+    # initialize with an event and division index
+    #  sample division indices to divisions:
+    #    0 -> 1x1
+    #    1 -> 2x1
+    #    2 -> 2x2
+    #    3 -> 3x2
+    #    4 -> 3x3
+    def __init__(self, quit_event, div_idx):
         self._event_all = quit_event
+        self._calc_div(div_idx)
+
+    # Helper Functions
+    def _gen_pos(self, div, pos):
+        # assumes that these values were already checked
+        # position aligned to the left
+        if (pos == 0):
+            pos_str = "+0"
+        # position in the center
+        elif (pos < div-1):
+            pos_str = f"+{100*pos//div}%"
+        # position aligned to the right
+        else:
+            pos_str = "-0"
+    
+        return pos_str
+    
+    def _gen_geo_str(self, idx):
+        # divisions
+        # must be greater than 0
+        assert self._div[0] > 0
+        assert self._div[1] > 0
+        # must have columns and rows in division
+        assert len(self._div) == 2
+
+        # position
+        # calculate column and row
+        colDiv = self._div[0]
+        rowDiv = self._div[1]
+        [colPos, rowPos] = self._idx2pos(idx)
+        # positions must be less than divisions
+        assert colPos < self._div[0]
+        assert rowPos < self._div[1]
+    
+        # column width calculation
+        geo_str=f"{100//self._div[0]}%"
+        # row width calculation
+        geo_str=f"{geo_str}x{100//self._div[1]}%"
+        # column position
+        geo_str += self._gen_pos(colDiv, colPos)
+        # row position
+        geo_str += self._gen_pos(rowDiv, rowPos)
+    
+        return geo_str
+    
+    def _calc_div(self, index):
+        assert index >= 0 
+        # this function expects a screen that is "wide" and not "tall"
+        col = 1
+        row = 1
+        while index != 0:
+            index -= 1
+            if (col <= row):
+                col += 1
+            else:
+                row += 1
+    
+        self._div = [col, row]
+        self._total = col * row
+    
+    def _idx2pos(self, idx):
+        assert idx < self._total
+        return [idx % self._div[0], idx // self._div[0]]
     
     # this thread actually contains the mpv stream player
-    def _play_thread(self, event_in, event_out, span, pos, url):
+    def _play_thread(self, event_in, event_out, idx, url):
         player = mpv.MPV()
         # a series of configuration options that make the player act like a
         # security monitor
@@ -65,7 +100,7 @@ class SecurityMonitorX2():
         player.keepaspect = "no"
         player.ao = "pulseaudio"
         player.profile = "low-latency"
-        geo_str = gen_geo_str(2,1,pos,0)
+        geo_str = self._gen_geo_str(idx)
         player.geometry = geo_str
         # enter the camera URL and wait until it starts to play
         player.play(url)
@@ -95,17 +130,16 @@ class SecurityMonitorX2():
     def _handle_player(self, p_cnt, init_d = True):
         # inital player logic
         if (init_d):
-            next_pi = (p_cnt + 2) % 4
+            next_pi = (p_cnt + self._total) % (self._total * 2)
         else:
             next_pi = p_cnt
-            p_cnt = (p_cnt + 2) % 4
-        pos = p_cnt % 2
+            p_cnt = (p_cnt + self._total) % (self._total * 2)
+        pos = p_cnt % self._total
         url = self.urls[pos]
         logging.info(f"Starting player: {next_pi}")
         self.thr[next_pi] = multiprocessing.Process(target=self._play_thread, args=(
             self.evt[next_pi],
             self.evt[p_cnt],
-            0,
             pos,
             url))
         self.thr[next_pi].daemon = True
@@ -115,9 +149,10 @@ class SecurityMonitorX2():
     # main / run function within the class
     def main(self):
         logging.info("Starting 2x security monitor")
+        assert len(self.urls) >= self._total
 
-        self.evt = [multiprocessing.Event() for _ in range(4)]
-        self.thr = [None] * 4
+        self.evt = [multiprocessing.Event() for _ in range(self._total*2)]
+        self.thr = [None] * (self._total*2)
         self.event_w = threading.Event()
     
         try: 
@@ -132,7 +167,7 @@ class SecurityMonitorX2():
                     time_cnt = 0
                     self._handle_player(p_cnt)
                     self.thr[p_cnt].join()
-                    p_cnt = (p_cnt + 1) % 4
+                    p_cnt = (p_cnt + 1) % (self._total*2)
                 self.event_w.wait(10)
         finally:
             logging.info("Waiting for player threads...")
@@ -247,7 +282,7 @@ class MonitorTop(mqtt.Client):
         self.loop_start()
 
         #  security monitor splitter / windower initialize
-        sm2 = SecurityMonitorX2(self.stopPlaying)
+        sm2 = SecurityMonitorX2(self.stopPlaying, 1)
         while not self.monitorExit.is_set():
             logging.debug(f"Montior Loop State: {self.mtstate}")
             # execution
