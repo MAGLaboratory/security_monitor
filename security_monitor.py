@@ -5,12 +5,47 @@ import multiprocessing
 import threading
 import logging
 import signal
+import socket
+import select
 from Xlib.ext import dpms
 from Xlib import display
 import paho.mqtt.client as mqtt
 from enum import Enum
 from dataclasses import dataclass
 from dataclasses_json import dataclass_json
+
+# My uwudp listener
+class UDPListen(threading.Thread):
+    def __init__(self, onCallback, offCallback):
+        threading.Thread.__init__(self)
+        self._onCB = onCallback
+        self._offCB = offCallback
+        self._ip = "0.0.0.0"
+        self._port = 11017
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._sock.bind((self._ip, self._port))
+        self._inputs = [self._sock]
+        self._running = True
+
+    def run(self):
+        logging.info(f"Listening for UDP packets on: {self._ip}:{self._port}")
+        while self._running:
+            read, _, _ = select.select(self._inputs, [], [])
+            for s in read:
+                if s == self._sock:
+                    data, addr = self._sock.recvfrom(1024)
+                    logging.info(f"Received packet from {addr[0]}:{addr[1]}")
+                    decoded = data.decode()
+                    logging.info(f"Data: {decoded}")
+                    if (decoded.lower() == "on"):
+                        self._onCB()
+                    else:
+                        self._offCB()
+
+    def stop(self):
+        self._running = False
+        self._sock.close()
+        logging.info("UDP stopped.")
 
 # Security Monitor Windowing and Splitting
 class SecurityMonitorX2():
@@ -92,7 +127,7 @@ class SecurityMonitorX2():
         return [idx % self._div[0], idx // self._div[0]]
     
     # this thread actually contains the mpv stream player
-    def _play_thread(self, event_in, event_out, idx, url):
+    def _play_thread(self, event_in, event_out, idx, url, name):
         player = mpv.MPV()
         # a series of configuration options that make the player act like a
         # security monitor
@@ -107,7 +142,7 @@ class SecurityMonitorX2():
         player.wait_until_playing()
         # set the output event to terminate the player behind this one
         event_out.set()
-        logging.info("Signaling player start.")
+        logging.info(f"Signaling player {name} start.")
         try:
             while not self._event_all.is_set() and not event_in.is_set():
                 try:
@@ -122,29 +157,32 @@ class SecurityMonitorX2():
                     logging.warn("Player caught Keyboard Interrupt.")
                     continue
         finally:
-            logging.info("Stopping player.")
+            logging.info(f"Stopping player {name}.")
             player.terminate()
             del player
     
     # helper function to spawn a player
-    def _handle_player(self, p_cnt, init_d = True):
+    def _handle_player(self, last_p, running = True):
         # inital player logic
-        if (init_d):
-            next_pi = (p_cnt + self._total) % (self._total * 2)
+        if (running):
+            pi = (last_p + self._total) % (self._total * 2)
         else:
-            next_pi = p_cnt
-            p_cnt = (p_cnt + self._total) % (self._total * 2)
-        pos = p_cnt % self._total
+            # state where the players are initializing
+            pi = last_p
+            last_p = (last_p + self._total) % (self._total * 2)
+        pos = last_p % self._total
         url = self.urls[pos]
-        logging.info(f"Starting player: {next_pi}")
-        self.thr[next_pi] = multiprocessing.Process(target=self._play_thread, args=(
-            self.evt[next_pi],
-            self.evt[p_cnt],
+        logging.info(f"Starting player: {pi}")
+        self.thr[pi] = multiprocessing.Process(target=self._play_thread, args=(
+            self.evt[pi],
+            self.evt[last_p],
             pos,
-            url))
-        self.thr[next_pi].daemon = True
-        self.evt[next_pi].clear()
-        self.thr[next_pi].start()
+            url,
+            pi))
+        self.thr[pi].daemon = True
+        self.evt[pi].clear()
+        self.thr[pi].start()
+        logging.info(f"Player started: {pi}")
    
     # main / run function within the class
     def main(self):
@@ -208,6 +246,14 @@ class MonitorTop(mqtt.Client):
         self.subscribe("reporter/checkup_req")
         self.subscribe("secmon00/CMD_DisplayOn")
 
+    def monOn(self):
+        self.screenOff.clear()
+        self.stopPlaying.clear()
+
+    def monOff(self):
+        self.screenOff.set()
+        self.stopPlaying.set()
+
     def on_message(self, mqttc, obj, msg):
         if msg.topic == "reporter/checkup_req":
             logging.info("Checkup requested.")
@@ -217,11 +263,9 @@ class MonitorTop(mqtt.Client):
             decoded = msg.payload.decode('utf-8')
             logging.info("Display Commanded: " + decoded)
             if (decoded.lower() == "false" or decoded == "0"):
-                self.screenOff.set()
-                self.stopPlaying.set()
+                self.monOff()
             if (decoded.lower() == "true" or decoded == "1"):
-                self.screenOff.clear()
-                self.stopPlaying.clear()
+                self.monOn()
 
     def on_log(self, mqttc, obj, level, string):
         if level == mqtt.MQTT_LOG_DEBUG:
@@ -281,6 +325,10 @@ class MonitorTop(mqtt.Client):
         self.connect("hal.maglab", 1883, 60)
         self.loop_start()
 
+        logging.info("Starting UDP.")
+        self.udp = UDPListen(self.monOn, self.monOff)
+        self.udp.start()
+
         #  security monitor splitter / windower initialize
         sm2 = SecurityMonitorX2(self.stopPlaying, 1)
         while not self.monitorExit.is_set():
@@ -319,6 +367,9 @@ class MonitorTop(mqtt.Client):
 
         logging.info("Stopping MQTT.")
         self.loop_stop()
+
+        logging.info("Stopping UDP.")
+        self.udp.stop()
 
 if __name__ == "__main__":
     monitor = MonitorTop(mqtt.CallbackAPIVersion.VERSION2)
