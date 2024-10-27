@@ -13,42 +13,59 @@ import paho.mqtt.client as mqtt
 from enum import Enum
 from dataclasses import dataclass
 from dataclasses_json import dataclass_json
+import os
 
 # My uwudp listener
 class UDPListen(threading.Thread):
     def __init__(self, onCallback, offCallback):
         threading.Thread.__init__(self)
+        # callbacks
         self._onCB = onCallback
         self._offCB = offCallback
+        # internet protocol
         self._ip = "0.0.0.0"
         self._port = 11017
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.bind((self._ip, self._port))
-        self._inputs = [self._sock]
-        self._running = True
+        # select function
+        # pipe for immediate exit
+        self._rpipe, self._wpipe = os.pipe()
+        self._inputs = [self._sock, self._rpipe]
 
     def run(self):
         logging.info(f"Listening for UDP packets on: {self._ip}:{self._port}")
-        while self._running:
+        while True:
             read, _, _ = select.select(self._inputs, [], [])
             for s in read:
                 if s == self._sock:
                     data, addr = self._sock.recvfrom(1024)
-                    logging.info(f"Received packet from {addr[0]}:{addr[1]}")
+                    logging.debug(f"Received packet from {addr[0]}:{addr[1]}")
                     decoded = data.decode()
-                    logging.info(f"Data: {decoded}")
+                    logging.debugf"Data: {decoded}")
+                    response = "NO"
                     if (decoded.lower() == "on"):
+                        logging.info(f"Received valid ON command from {addr[0]}:{addr[1]}")
                         self._onCB()
+                        response = "OK"
                     else:
+                        logging.info(f"Received valid OFF command from {addr[0]}:{addr[1]}")
                         self._offCB()
+                        response = "OK"
+                    sock.sendto(response.encode(), addr)
+                if s == self._rpipe:
+                    logging.info("UDP stopping.")
+                    os.close(self._rpipe)
+                    break
+                    
+        self._sock.close()
 
     def stop(self):
-        self._running = False
-        self._sock.close()
-        logging.info("UDP stopped.")
+        os.write(self._wpipe, " ")
+        os.close(self._wpipe)
+        logging.info("UDP stop called.")
 
 # Security Monitor Windowing and Splitting
-class SecurityMonitorX2():
+class SecurityMonitor():
     # TODO use queue for return instead
     urls = ["rtsp://maglab:magcat@connor.maglab:8554/Camera1_sub",
             "rtsp://maglab:magcat@connor.maglab:8554/Camera2_sub"]
@@ -186,7 +203,7 @@ class SecurityMonitorX2():
    
     # main / run function within the class
     def main(self):
-        logging.info("Starting 2x security monitor")
+        logging.info("Starting security monitor")
         assert len(self.urls) >= self._total
 
         self.evt = [multiprocessing.Event() for _ in range(self._total*2)]
@@ -213,7 +230,7 @@ class SecurityMonitorX2():
                 if not t == None:
                     t.join()
 
-            logging.info("Stopping 2x security monitor.")
+            logging.info("Stopping security monitor.")
 
 # Top Level Security Monitor Management
 class MonitorTop(mqtt.Client):
@@ -330,12 +347,13 @@ class MonitorTop(mqtt.Client):
         self.udp.start()
 
         #  security monitor splitter / windower initialize
-        sm2 = SecurityMonitorX2(self.stopPlaying, 1)
+        sm2 = None
         while not self.monitorExit.is_set():
             logging.debug(f"Montior Loop State: {self.mtstate}")
             # execution
             if self.mtstate == self.MTState.PLAYING:
                 self.stopPlaying.clear()
+                sm2 = SecurityMonitor(self.stopPlaying, 1)
                 if self.pm_able:
                     logging.info("Turning Screen ON.")
                     self.disp.dpms_force_level(dpms.DPMSModeOn)
@@ -372,5 +390,8 @@ class MonitorTop(mqtt.Client):
         self.udp.stop()
 
 if __name__ == "__main__":
+    # there is an explanation for why this is calling "monitorTop."
+    # the function "SecurityMontior" was actually developed before a monitor
+    # top was envisioned to encapsulate it.
     monitor = MonitorTop(mqtt.CallbackAPIVersion.VERSION2)
     monitor.main()
