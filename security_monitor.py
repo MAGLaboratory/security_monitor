@@ -34,10 +34,10 @@ class UDPListen(threading.Thread):
 
     def run(self):
         logging.info(f"Listening for UDP packets on: {self._ip}:{self._port}")
-        while True:
-            read, _, _ = select.select(self._inputs, [], [])
+        while self._running:
+            read, _, _ = select.select(self._inputs, [], [], 1)
             for s in read:
-                if s == self._sock:
+                if self._sock != None and s == self._sock:
                     data, addr = self._sock.recvfrom(1024)
                     logging.debug(f"Received packet from {addr[0]}:{addr[1]}")
                     decoded = data.decode()
@@ -148,6 +148,7 @@ class SecurityMonitor():
         player = mpv.MPV()
         # a series of configuration options that make the player act like a
         # security monitor
+        player.network_timeout = 10
         player.border = "no"
         player.keepaspect = "no"
         player.ao = "pulseaudio"
