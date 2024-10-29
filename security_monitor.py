@@ -34,14 +34,14 @@ class UDPListen(threading.Thread):
 
     def run(self):
         logging.info(f"Listening for UDP packets on: {self._ip}:{self._port}")
-        while self._running:
+        while True:
             read, _, _ = select.select(self._inputs, [], [], 1)
             for s in read:
                 if self._sock != None and s == self._sock:
                     data, addr = self._sock.recvfrom(1024)
                     logging.debug(f"Received packet from {addr[0]}:{addr[1]}")
                     decoded = data.decode()
-                    logging.debugf"Data: {decoded}")
+                    logging.debug(f"Data: {decoded}")
                     response = "NO"
                     if (decoded.lower() == "on"):
                         logging.info(f"Received valid ON command from {addr[0]}:{addr[1]}")
@@ -51,7 +51,7 @@ class UDPListen(threading.Thread):
                         logging.info(f"Received valid OFF command from {addr[0]}:{addr[1]}")
                         self._offCB()
                         response = "OK"
-                    sock.sendto(response.encode(), addr)
+                    self._sock.sendto(response.encode(), addr)
                 if s == self._rpipe:
                     logging.info("UDP stopping.")
                     os.close(self._rpipe)
@@ -60,7 +60,7 @@ class UDPListen(threading.Thread):
         self._sock.close()
 
     def stop(self):
-        os.write(self._wpipe, " ")
+        os.write(self._wpipe, " ".encode())
         os.close(self._wpipe)
         logging.info("UDP stop called.")
 
