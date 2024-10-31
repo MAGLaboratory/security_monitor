@@ -14,6 +14,8 @@ from enum import Enum
 from dataclasses import dataclass
 from dataclasses_json import dataclass_json
 import os
+import re
+import json
 
 # My uwudp listener
 class UDPListen(threading.Thread):
@@ -47,10 +49,25 @@ class UDPListen(threading.Thread):
                         logging.info(f"Received valid ON command from {addr[0]}:{addr[1]}")
                         self._onCB()
                         response = "OK"
-                    else:
+                    elif (decoded.lower() == "off"):
                         logging.info(f"Received valid OFF command from {addr[0]}:{addr[1]}")
                         self._offCB()
                         response = "OK"
+                    else:
+                        matches = re.fullmatch("\((\{.+\})\, (.+)\)", decoded)
+                        if (matches != None):
+                            try:
+                                data = json.loads(matches[1])
+                                force = data["force"]
+                                logging.debug(f"Received force: {force}")
+                                if (force):
+                                    self._onCB()
+                                else:
+                                    self._offCB()
+
+                            except (json.JSONDecodeError, AttributeError):
+                                pass
+
                     self._sock.sendto(response.encode(), addr)
                 if s == self._rpipe:
                     logging.info("UDP stopping.")
