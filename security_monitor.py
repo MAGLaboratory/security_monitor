@@ -16,12 +16,56 @@ from dataclasses_json import dataclass_json
 import os
 import re
 import json
+import base64
+import zlib
+import hashlib
+import hmac
+
+class utils:
+    START = "magld_"
+    MINCTLEN = 2
+    B64CRCLEN = 6
+    def b64enc(obj):
+        return base64.b64encode(obj).decode("utf-8").rstrip('=')
+
+    def b64pad(s):
+        return s + '=' * ((4 - len(s) % 4) % 4)
+
+    # token is returned as byte array
+    def token_decode(token):
+        logging.debug(f"Token decode called with: {token}")
+        token = token.rstrip()
+        # length verification
+        assert len(token) >= len(utils.START) + utils.MINCTLEN + utils.B64CRCLEN
+        # header verification
+        assert token[0:len(utils.START)].lower() == utils.START
+        # retrieve token in bytes
+        # pad token with magical number of pad characters to make base64 happy
+        central_token = utils.b64pad(token[len(utils.START):-utils.B64CRCLEN])
+        central_token = base64.b64decode(str.encode(central_token))
+
+        end_checksum = token[-utils.B64CRCLEN:]
+        # although the default is big endian for most libraries, we use little 
+        # endian here to keep consistent with the encoding schemes used by
+        # other famous tokens... 
+        calc_checksum = utils.b64enc(zlib.crc32(central_token).to_bytes(4, "little"))
+        # checksum verification
+        assert calc_checksum == end_checksum
+
+        return central_token
+
+    def wr_hmac(msg, token):
+        logging.debug(f"HMAC calculation utility called with: {msg} and {token}")
+        obj = hmac.new(token, msg=str.encode(msg), digestmod=hashlib.sha256)
+        return utils.b64enc(obj.digest())
+
 
 # My uwudp listener
 class UDPListen(threading.Thread):
-    def __init__(self, onCallback, offCallback):
+    def __init__(self, msgAuth, onCallback, offCallback):
         threading.Thread.__init__(self)
         # callbacks
+        self._msgAuth = msgAuth
         self._onCB = onCallback
         self._offCB = offCallback
         # internet protocol
@@ -29,10 +73,7 @@ class UDPListen(threading.Thread):
         self._port = 11017
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.bind((self._ip, self._port))
-        # select function
-        # pipe for immediate exit
-        self._rpipe, self._wpipe = os.pipe()
-        self._inputs = [self._sock, self._rpipe]
+        self._inputs = [self._sock]
 
     def run(self):
         logging.info(f"Listening for UDP packets on: {self._ip}:{self._port}")
@@ -40,10 +81,15 @@ class UDPListen(threading.Thread):
             read, _, _ = select.select(self._inputs, [], [], 1)
             for s in read:
                 if self._sock != None and s == self._sock:
-                    data, addr = self._sock.recvfrom(1024)
-                    logging.debug(f"Received packet from {addr[0]}:{addr[1]}")
+                    try: 
+                        data, addr = self._sock.recvfrom(1024)
+                    except socket.error:
+                        logging.info("UDP socket closed.")
+                        break
+                    logging.info(f"Received packet from {addr[0]}:{addr[1]}")
                     decoded = data.decode()
                     logging.debug(f"Data: {decoded}")
+                    # the default response is NO.  keep it this way until we have a valid input
                     response = "NO"
                     if (decoded.lower() == "on"):
                         logging.info(f"Received valid ON command from {addr[0]}:{addr[1]}")
@@ -54,32 +100,40 @@ class UDPListen(threading.Thread):
                         self._offCB()
                         response = "OK"
                     else:
+                        """
+                        The JSON and HMAC key are contained in a `pair` from Kotlin
+                        we run the output formatting of a pair through this particular
+                        regex.
+                        This output is somewhat equivalent for interpreting Python `tuple`s.
+
+                        And the HMAC output is b64 encoded.
+                        """
+                        logging.debug("Attempting to match UDP input...")
                         matches = re.fullmatch("\((\{.+\})\, (.+)\)", decoded)
                         if (matches != None):
+                            logging.debug(f"The split strings are: {matches[1]} and {matches[2]}")
                             try:
                                 data = json.loads(matches[1])
                                 force = data["force"]
-                                logging.debug(f"Received force: {force}")
+                                self._msgAuth(matches[1], matches[2])
+                                logging.info(f"Received monitor status force: {force}")
                                 if (force):
                                     self._onCB()
                                 else:
                                     self._offCB()
 
-                            except (json.JSONDecodeError, AttributeError):
+                            except (json.JSONDecodeError, AttributeError, AssertionError) as e:
+                                logging.info(e.toString())
                                 pass
 
                     self._sock.sendto(response.encode(), addr)
-                if s == self._rpipe:
-                    logging.info("UDP stopping.")
-                    os.close(self._rpipe)
-                    break
-                    
-        self._sock.close()
+            else:
+                continue
+            break
 
     def stop(self):
-        os.write(self._wpipe, " ".encode())
-        os.close(self._wpipe)
         logging.info("UDP stop called.")
+        self._sock.close()
 
 # Security Monitor Windowing and Splitting
 class SecurityMonitor():
@@ -275,11 +329,25 @@ class MonitorTop(mqtt.Client):
     @dataclass
     class config:
         name: str
+        tokens: list[str]
 
     def on_connect(self, mqttc, obj, flag, reason, properties):
         logging.info(f"MQTT connected: {reason}")
         self.subscribe("reporter/checkup_req")
         self.subscribe("secmon00/CMD_DisplayOn")
+
+    def msgAuth(self, msg, code):
+        logging.debug(f"MsgAuth called with: {msg} and {code}")
+        match = False
+        for token in self._tokens:
+            calc = utils.wr_hmac(msg, token)
+            logging.debug(f"Calculated hmac as: {calc}")
+            if (calc == code):
+                match = True
+                break
+
+        assert(match)
+        # assert(any(util.hmac(msg, token) == code for token in self._tokens))
 
     def monOn(self):
         self.screenOff.clear()
@@ -321,6 +389,16 @@ class MonitorTop(mqtt.Client):
         logging.basicConfig(level="DEBUG")
         logging.info("Starting Security Monitor Program")
 
+        logging.info("Decoding tokens")
+        self._tokens = []
+        for token in ["magld_BK9puFlNlsY9d6y39b+1UOJtqaB7kLvSzEXXJg2N196Q"]:
+            try:
+                self._tokens.append(utils.token_decode(token))
+            except:
+                pass
+        #self._tokens = list(filter(utils.token_decode, ["magld_BK9puFlNlsY9d6y39b+1UOJtqaB7kLvSzEXXJg2N196Q"]))
+        logging.debug(f"Tokens decoded: {self._tokens}")
+
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
         # X11
@@ -361,7 +439,7 @@ class MonitorTop(mqtt.Client):
         self.loop_start()
 
         logging.info("Starting UDP.")
-        self.udp = UDPListen(self.monOn, self.monOff)
+        self.udp = UDPListen(self.msgAuth, self.monOn, self.monOff)
         self.udp.start()
 
         #  security monitor splitter / windower initialize
