@@ -119,8 +119,10 @@ class UDPListen(threading.Thread):
                                 logging.info(f"Received monitor status force: {force}")
                                 if (force):
                                     self._onCB()
+                                    response = "OK"
                                 else:
                                     self._offCB()
+                                    response = "OK"
 
                             except (json.JSONDecodeError, AttributeError, AssertionError) as e:
                                 logging.info(e.toString())
@@ -348,6 +350,29 @@ class MonitorTop(mqtt.Client):
 
         assert(match)
         # assert(any(util.hmac(msg, token) == code for token in self._tokens))
+
+    def cmdMsgDecode(self, cmd)
+        retval = 1
+        matches = re.fullmatch("\((\{.+\})\, (.+)\)", cmd)
+        if (matches != None):
+            logging.debug(f"The split strings are: {matches[1]} and {matches[2]}")
+            try:
+                data = json.loads(matches[1])
+                force = data["force"]
+                self._msgAuth(matches[1], matches[2])
+                logging.info(f"Received monitor status force: {force}")
+                if (force):
+                    self.monOn()
+                    retval = 0
+                else:
+                    self.monOff()
+                    retval = 0
+
+            except (json.JSONDecodeError, AttributeError, AssertionError) as e:
+                logging.info(e.toString())
+                pass
+
+        return retval
 
     def monOn(self):
         self.screenOff.clear()
