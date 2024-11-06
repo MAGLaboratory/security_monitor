@@ -13,6 +13,7 @@ import paho.mqtt.client as mqtt
 from enum import Enum
 from dataclasses import dataclass
 from dataclasses_json import dataclass_json
+from typing import Optional
 import os
 import re
 import json
@@ -62,10 +63,10 @@ class utils:
 
 # My uwudp listener
 class UDPListen(threading.Thread):
-    def __init__(self, msgAuth, onCallback, offCallback):
+    def __init__(self, msgDecode, onCallback, offCallback):
         threading.Thread.__init__(self)
         # callbacks
-        self._msgAuth = msgAuth
+        self._cmdMsgDecode = msgDecode
         self._onCB = onCallback
         self._offCB = offCallback
         # internet protocol
@@ -100,33 +101,9 @@ class UDPListen(threading.Thread):
                         self._offCB()
                         response = "OK"
                     else:
-                        """
-                        The JSON and HMAC key are contained in a `pair` from Kotlin
-                        we run the output formatting of a pair through this particular
-                        regex.
-                        This output is somewhat equivalent for interpreting Python `tuple`s.
-
-                        And the HMAC output is b64 encoded.
-                        """
                         logging.debug("Attempting to match UDP input...")
-                        matches = re.fullmatch("\((\{.+\})\, (.+)\)", decoded)
-                        if (matches != None):
-                            logging.debug(f"The split strings are: {matches[1]} and {matches[2]}")
-                            try:
-                                data = json.loads(matches[1])
-                                force = data["force"]
-                                self._msgAuth(matches[1], matches[2])
-                                logging.info(f"Received monitor status force: {force}")
-                                if (force):
-                                    self._onCB()
-                                    response = "OK"
-                                else:
-                                    self._offCB()
-                                    response = "OK"
-
-                            except (json.JSONDecodeError, AttributeError, AssertionError) as e:
-                                logging.info(e.toString())
-                                pass
+                        if not self._cmdMsgDecode(decoded):
+                            response = "OK"
 
                     self._sock.sendto(response.encode(), addr)
             else:
@@ -331,12 +308,16 @@ class MonitorTop(mqtt.Client):
     @dataclass
     class config:
         name: str
+        urls: list[str]
         tokens: list[str]
+        mqtt_broker: str
+        mqtt_port: Optional[int] = 1883
+        mqtt_timeout: Optional[int] = 60
 
     def on_connect(self, mqttc, obj, flag, reason, properties):
         logging.info(f"MQTT connected: {reason}")
         self.subscribe("reporter/checkup_req")
-        self.subscribe("secmon00/CMD_DisplayOn")
+        self.subscribe("secmon00/cmd")
 
     def msgAuth(self, msg, code):
         logging.debug(f"MsgAuth called with: {msg} and {code}")
@@ -351,7 +332,15 @@ class MonitorTop(mqtt.Client):
         assert(match)
         # assert(any(util.hmac(msg, token) == code for token in self._tokens))
 
-    def cmdMsgDecode(self, cmd)
+    """
+    The JSON and HMAC key are contained in a `pair` from Kotlin
+    we run the output formatting of a pair through this particular
+    regex.
+    This output is somewhat equivalent for interpreting Python `tuple`s.
+
+    And the HMAC output is b64 encoded.
+    """
+    def cmdMsgDecode(self, cmd):
         retval = 1
         matches = re.fullmatch("\((\{.+\})\, (.+)\)", cmd)
         if (matches != None):
@@ -385,15 +374,12 @@ class MonitorTop(mqtt.Client):
     def on_message(self, mqttc, obj, msg):
         if msg.topic == "reporter/checkup_req":
             logging.info("Checkup requested.")
-            # checkup
-        elif msg.topic == "secmon00/CMD_DisplayOn":
+            # TODO checkup
+        elif msg.topic == "secmon00/cmd":
             # do 
             decoded = msg.payload.decode('utf-8')
             logging.info("Display Commanded: " + decoded)
-            if (decoded.lower() == "false" or decoded == "0"):
-                self.monOff()
-            if (decoded.lower() == "true" or decoded == "1"):
-                self.monOn()
+            self.cmdMsgDecode(decoded)
 
     def on_log(self, mqttc, obj, level, string):
         if level == mqtt.MQTT_LOG_DEBUG:
@@ -413,16 +399,21 @@ class MonitorTop(mqtt.Client):
     def main(self):
         logging.basicConfig(level="DEBUG")
         logging.info("Starting Security Monitor Program")
+        self._client_id = str.encode(self.config.name)
 
         logging.info("Decoding tokens")
         self._tokens = []
-        for token in ["magld_BK9puFlNlsY9d6y39b+1UOJtqaB7kLvSzEXXJg2N196Q"]:
+        for token in self.config.tokens:
             try:
                 self._tokens.append(utils.token_decode(token))
             except:
+                logging.error("Token not accepted: {token}")
                 pass
         #self._tokens = list(filter(utils.token_decode, ["magld_BK9puFlNlsY9d6y39b+1UOJtqaB7kLvSzEXXJg2N196Q"]))
-        logging.debug(f"Tokens decoded: {self._tokens}")
+        if not len(self._tokens):
+            logging.critical("No tokens accepted.")
+        else:
+            logging.debug(f"Tokens decoded: {self._tokens}")
 
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
@@ -460,11 +451,11 @@ class MonitorTop(mqtt.Client):
         #  host hal.maglab
         #  port 1883 (default)
         #  timeout 60
-        self.connect("hal.maglab", 1883, 60)
+        self.connect(self.config.mqtt_broker, self.config.mqtt_port, self.config.mqtt_timeout)
         self.loop_start()
 
         logging.info("Starting UDP.")
-        self.udp = UDPListen(self.msgAuth, self.monOn, self.monOff)
+        self.udp = UDPListen(self.cmdMsgDecode, self.monOn, self.monOff)
         self.udp.start()
 
         #  security monitor splitter / windower initialize
@@ -475,6 +466,7 @@ class MonitorTop(mqtt.Client):
             if self.mtstate == self.MTState.PLAYING:
                 self.stopPlaying.clear()
                 sm2 = SecurityMonitor(self.stopPlaying, 1)
+                sm2.urls = self.config.urls
                 if self.pm_able:
                     logging.info("Turning Screen ON.")
                     self.disp.dpms_force_level(dpms.DPMSModeOn)
@@ -515,4 +507,7 @@ if __name__ == "__main__":
     # the function "SecurityMontior" was actually developed before a monitor
     # top was envisioned to encapsulate it.
     monitor = MonitorTop(mqtt.CallbackAPIVersion.VERSION2)
+    pgm_path = os.path.dirname(os.path.abspath(__file__))
+    with open(pgm_path + "/mon_config.json", "r") as config_file:
+        monitor.config = MonitorTop.config.from_json(config_file.read())
     monitor.main()
