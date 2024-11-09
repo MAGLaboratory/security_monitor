@@ -27,13 +27,16 @@ class utils:
     START = "magld_"
     MINCTLEN = 2
     B64CRCLEN = 6
+    @staticmethod
     def b64enc(obj):
         return base64.b64encode(obj).decode("utf-8").rstrip('=')
 
+    @staticmethod
     def b64pad(s):
         return s + '=' * ((4 - len(s) % 4) % 4)
 
     # token is returned as byte array
+    @staticmethod
     def token_decode(token):
         logging.debug(f"Token decode called with: {token}")
         token = token.rstrip()
@@ -47,15 +50,16 @@ class utils:
         central_token = base64.b64decode(str.encode(central_token))
 
         end_checksum = token[-utils.B64CRCLEN:]
-        # although the default is big endian for most libraries, we use little 
+        # although the default is big endian for most libraries, we use little
         # endian here to keep consistent with the encoding schemes used by
-        # other famous tokens... 
+        # other famous tokens...
         calc_checksum = utils.b64enc(zlib.crc32(central_token).to_bytes(4, "little"))
         # checksum verification
         assert calc_checksum == end_checksum
 
         return central_token
 
+    @staticmethod
     def wr_hmac(msg, token):
         logging.debug(f"HMAC calculation utility called with: {msg} and {token}")
         obj = hmac.new(token, msg=str.encode(msg), digestmod=hashlib.sha256)
@@ -82,27 +86,26 @@ class autoMotionTimer(threading.Thread):
         while not self._event.wait(1):
             # get input status and clear it
             isSet = self._input.is_set()
-            if isSet: 
+            if isSet:
                 self._input.clear()
             # is automatic mode allowed
-            if (self._auto.is_set()):
-                if (isSet):
+            if self._auto.is_set():
+                if isSet:
                     counter = 0
-                # screen on 
+                # screen on
                 self._onFun()
 
             # increment counter until limit
-            if (counter < limit):
-                counter += 1 
+            if counter < limit:
+                counter += 1
 
-            if (self._auto.is_set()):
-                if (counter >= limit):
+            if self._auto.is_set():
+                if counter >= limit:
                     # screen off
                     self._offFun()
 
         logging.debug("Automatic control stop.")
 
-              
 
     def stop(self):
         logging.debug("Automatic control stop requested.")
@@ -129,7 +132,7 @@ class UDPListen(threading.Thread):
             read, _, _ = select.select(self._inputs, [], [], 1)
             for s in read:
                 if self._sock != None and s == self._sock:
-                    try: 
+                    try:
                         data, addr = self._sock.recvfrom(1024)
                     except socket.error:
                         logging.debug("UDP socket closed.")
@@ -173,17 +176,17 @@ class SecurityMonitor():
     def _gen_pos(self, div, pos):
         # assumes that these values were already checked
         # position aligned to the left
-        if (pos == 0):
+        if pos == 0:
             pos_str = "+0"
         # position in the center
-        elif (pos < div-1):
+        elif pos < div-1:
             pos_str = f"+{100*pos//div}%"
         # position aligned to the right
         else:
             pos_str = "-0"
-    
+
         return pos_str
-    
+
     def _gen_geo_str(self, idx):
         # divisions
         # must be greater than 0
@@ -200,7 +203,7 @@ class SecurityMonitor():
         # positions must be less than divisions
         assert colPos < self._div[0]
         assert rowPos < self._div[1]
-    
+
         # column width calculation
         geo_str=f"{100//self._div[0]}%"
         # row width calculation
@@ -209,28 +212,28 @@ class SecurityMonitor():
         geo_str += self._gen_pos(colDiv, colPos)
         # row position
         geo_str += self._gen_pos(rowDiv, rowPos)
-    
+
         return geo_str
-    
+
     def _calc_div(self, index):
-        assert index >= 0 
+        assert index >= 0
         # this function expects a screen that is "wide" and not "tall"
         col = 1
         row = 1
         while index != 0:
             index -= 1
-            if (col <= row):
+            if col <= row:
                 col += 1
             else:
                 row += 1
-    
+
         self._div = [col, row]
         self._total = col * row
-    
+
     def _idx2pos(self, idx):
         assert idx < self._total
         return [idx % self._div[0], idx // self._div[0]]
-    
+
     # this thread actually contains the mpv stream player
     def _play_thread(self, event_in, event_out, idx, url, name):
         player = mpv.MPV()
@@ -274,11 +277,11 @@ class SecurityMonitor():
             logging.info(f"Player {name} stopping.")
             player.terminate()
             del player
-    
+
     # helper function to spawn a player
     def _handle_player(self, last_p, running = True):
         # inital player logic
-        if (running):
+        if running:
             # self._total is the number of players visible.
             # the actual number of players is self._total * 2
             pi = (last_p + self._total) % (self._total * 2)
@@ -299,7 +302,7 @@ class SecurityMonitor():
         self.evt[pi].clear()
         self.thr[pi].start()
         logging.info(f"Player started: {pi}")
-   
+
     # main / run function within the class
     def main(self):
         logging.info("Starting security monitor")
@@ -308,7 +311,7 @@ class SecurityMonitor():
         self.evt = [multiprocessing.Event() for _ in range(self._total*2)]
         self.thr = [None] * (self._total*2)
         self.event_w = threading.Event()
-    
+
         try: 
             # start initial players
             for i in range(self._total):
@@ -400,7 +403,7 @@ class MonitorTop(mqtt.Client):
     """
     def cmdMsgApply(self, cmd):
         retval = 1
-        matches = re.fullmatch("\((\{.+\})\, (.+)\)", cmd)
+        matches = re.fullmatch(r"\((\{.+\})\, (.+)\)", cmd)
         if (matches != None):
             logging.debug(f"The split strings are: {matches[1]} and {matches[2]}")
             try:
