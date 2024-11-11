@@ -1,0 +1,4 @@
+dataclasses-json==0.6.7
+paho-mqtt==2.1.0
+python-mpv==1.0.7
+python-xlib==0.33
