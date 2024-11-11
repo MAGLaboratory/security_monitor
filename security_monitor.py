@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+# pylint: disable=logging-fstring-interpolation
+
 """
 This is the main file of the security monitor program written by MAG Laboratory.
 
@@ -17,20 +19,12 @@ a current priority but may become one if the base distributions for raspbian / a
 supporting only wayland.
 """
 
-import mpv
 import multiprocessing
 import threading
 import logging
 import signal
 import socket
 import select
-from Xlib.ext import dpms
-from Xlib import display
-import paho.mqtt.client as mqtt
-from enum import Enum
-from dataclasses import dataclass
-from dataclasses_json import dataclass_json
-from typing import Optional
 import os
 import re
 import json
@@ -39,6 +33,13 @@ import zlib
 import hashlib
 import hmac
 import time
+from enum import Enum
+from typing import Optional
+from dataclasses import dataclass
+from dataclasses_json import dataclass_json
+import mpv
+from Xlib import display
+import paho.mqtt.client as mqtt
 
 class Utils:
     """
@@ -66,7 +67,6 @@ class Utils:
         decode and validate token
         return the "central token" as a byte array once validated 
         """
-        logging.debug(f"Token decode utility called with: {token}")
         token = token.rstrip()
         # length verification
         assert len(token) >= len(Utils.START) + Utils.MINCTLEN + Utils.B64CRCLEN
@@ -94,14 +94,14 @@ class Utils:
         obj = hmac.new(token, msg=str.encode(msg), digestmod=hashlib.sha256)
         return Utils.b64enc(obj.digest())
 
-class autoMotionTimer(threading.Thread):
+class AutoMotionTimer(threading.Thread):
     """ Timer thread for monitor shutdown """
     def __init__(self, autoEvent, inEvent, screenOn, screenOff):
         # "super" init
         threading.Thread.__init__(self)
         # callbacks
-        self._onFun = screenOn
-        self._offFun = screenOff
+        self._on_fun = screenOn
+        self._off_fun = screenOff
         # input
         self._auto = autoEvent
         self._input = inEvent
@@ -118,15 +118,15 @@ class autoMotionTimer(threading.Thread):
         logging.debug("Automatic control start.")
         while not self._event.wait(1):
             # get input status and clear it
-            isSet = self._input.is_set()
-            if isSet:
+            is_set = self._input.is_set()
+            if is_set:
                 self._input.clear()
             # is automatic mode allowed
             if self._auto.is_set():
-                if isSet:
+                if is_set:
                     counter = 0
                 # screen on
-                self._onFun()
+                self._on_fun()
 
             # increment counter until limit
             if counter < limit:
@@ -135,21 +135,21 @@ class autoMotionTimer(threading.Thread):
             if self._auto.is_set():
                 if counter >= limit:
                     # screen off
-                    self._offFun()
+                    self._off_fun()
 
         logging.debug("Automatic control stop.")
 
-    # stops the monitor thread
     def stop(self):
+        """ stops the monitor thread """
         logging.debug("Automatic control stop requested.")
         self._event.set()
 
-# My uwudp listener
 class UDPListen(threading.Thread):
+    """ My uwudp listener """
     def __init__(self, msgDecode):
         threading.Thread.__init__(self)
         # callbacks
-        self._cmdMsgApply = msgDecode
+        self._cmd_msg_apply = msgDecode
         # internet protocol
         self._ip = "0.0.0.0"
         self._port = 11017
@@ -157,16 +157,17 @@ class UDPListen(threading.Thread):
         self._sock.bind((self._ip, self._port))
         self._inputs = [self._sock]
 
-    # runs the UDP thread
     def run(self):
+        """ runs the UDP thread """
         logging.info(f"Listening for UDP packets on: {self._ip}:{self._port}")
         # hacky way to end a while loop using python
         while True:
             # select does not return automatically when the socket is closed, so a timeout must be
             # specified so that it can return with the closed loop in `read`
             read, _, _ = select.select(self._inputs, [], [], 1)
-            for s in read:
-                if self._sock != None and s == self._sock:
+            for sel_fd in read:
+                if self._sock is not None and sel_fd == self._sock:
+                    response = "NO"
                     try:
                         data, addr = self._sock.recvfrom(1024)
                     except socket.error:
@@ -176,7 +177,7 @@ class UDPListen(threading.Thread):
                     decoded = data.decode()
                     logging.debug(f"Data: {decoded}")
                     # fail false
-                    if not self._cmdMsgApply(decoded):
+                    if not self._cmd_msg_apply(decoded):
                         response = "OK"
 
                     self._sock.sendto(response.encode(), addr)
@@ -188,13 +189,13 @@ class UDPListen(threading.Thread):
             # executes if the for loop was also broken
             break
 
-    # stops the UDP thread
     def stop(self):
+        """ stops the UDP thread """
         logging.debug("UDP stop called.")
         self._sock.close()
 
-# Security Monitor Windowing and Splitting
 class SecurityMonitor():
+    """ Security Monitor Windowing and Splitting """
     # TODO use queue for return instead
     urls = ["rtsp://maglab:magcat@connor.maglab:8554/Camera1_sub",
             "rtsp://maglab:magcat@connor.maglab:8554/Camera2_sub"]
@@ -209,6 +210,10 @@ class SecurityMonitor():
     def __init__(self, quit_event, div_idx):
         self._event_all = quit_event
         self._calc_div(div_idx)
+
+        self.evt = [multiprocessing.Event() for _ in range(self._total*2)]
+        self.thr = [None] * (self._total*2)
+        self.event_w = threading.Event()
 
     # Helper Functions
     # generate position string based on divisions and index
@@ -237,21 +242,21 @@ class SecurityMonitor():
 
         # position
         # calculate column and row
-        colDiv = self._div[0]
-        rowDiv = self._div[1]
-        [colPos, rowPos] = self._idx2pos(idx)
+        col_div = self._div[0]
+        row_div = self._div[1]
+        [col_pos, row_pos] = self._idx2pos(idx)
         # positions must be less than divisions
-        assert colPos < self._div[0]
-        assert rowPos < self._div[1]
+        assert col_pos < self._div[0]
+        assert row_pos < self._div[1]
 
         # column width calculation
         geo_str=f"{100//self._div[0]}%"
         # row width calculation
         geo_str=f"{geo_str}x{100//self._div[1]}%"
         # column position
-        geo_str += self._gen_pos(colDiv, colPos)
+        geo_str += self._gen_pos(col_div, col_pos)
         # row position
-        geo_str += self._gen_pos(rowDiv, rowPos)
+        geo_str += self._gen_pos(row_div, row_pos)
 
         return geo_str
 
@@ -293,14 +298,15 @@ class SecurityMonitor():
         # wait until the player is playing
         # timeout added here to terminate if the URL is not found
         try:
-            player.wait_until_playing(timeout=60)
+            logging.debug(f"Waiting for player {name} to start...")
+            player.wait_until_playing(timeout=30)
         # set the output event to terminate the player behind this one
-        except Exception as e:
-            logging.error(f"Player {name} stopped while waiting to start playing: {str(e)}")
+        except Exception as exc:
+            logging.error(f"Player {name} stopped while waiting to start playing: {str(exc)}")
             player.terminate()
         finally:
+            logging.debug(f"Asking player below {name} to end.")
             event_out.set()
-            logging.info(f"Asking bottom player to {name} to end.")
 
         try:
             while not self._event_all.is_set() and not event_in.is_set():
@@ -313,7 +319,7 @@ class SecurityMonitor():
                     logging.error("Unexpected player shutdown.  Shutting down.")
                     self._event_all.set()
                 except KeyboardInterrupt:
-                    logging.warn("Player caught Keyboard Interrupt.")
+                    logging.warning("Player caught Keyboard Interrupt.")
                     continue
         finally:
             logging.info(f"Player {name} stopping.")
@@ -326,33 +332,29 @@ class SecurityMonitor():
         if running:
             # self._total is the number of players visible.
             # the actual number of players is self._total * 2
-            pi = (last_p + self._total) % (self._total * 2)
+            i_play = (last_p + self._total) % (self._total * 2)
         else:
             # state where the players are initializing
-            pi = last_p
+            i_play = last_p
             last_p = (last_p + self._total) % (self._total * 2)
         pos = last_p % self._total
         url = self.urls[pos]
-        logging.info(f"Starting player: {pi}")
-        self.thr[pi] = multiprocessing.Process(target=self._play_thread, args=(
-            self.evt[pi],
+        logging.info(f"Starting player: {i_play}")
+        self.thr[i_play] = multiprocessing.Process(target=self._play_thread, args=(
+            self.evt[i_play],
             self.evt[last_p],
             pos,
             url,
-            pi))
-        self.thr[pi].daemon = True
-        self.evt[pi].clear()
-        self.thr[pi].start()
-        logging.info(f"Player started: {pi}")
+            i_play))
+        self.thr[i_play].daemon = True
+        self.evt[i_play].clear()
+        self.thr[i_play].start()
+        logging.info(f"Player thread started: {i_play}")
 
-    # main / run function within the class
     def main(self):
+        """ main / run function within the class """
         logging.info("Starting security monitor")
         assert len(self.urls) >= self._total
-
-        self.evt = [multiprocessing.Event() for _ in range(self._total*2)]
-        self.thr = [None] * (self._total*2)
-        self.event_w = threading.Event()
 
         try:
             # start initial players
@@ -368,50 +370,72 @@ class SecurityMonitor():
                     # "handle" with the "started" parameter set to True
                     # starts the replacement player which asks the replaced player to stop
                     self._handle_player(p_cnt)
+                    # TODO: timeout and kill mechanism?
                     self.thr[p_cnt].join()
                     p_cnt = (p_cnt + 1) % (self._total*2)
                 self.event_w.wait(1)
         finally:
             logging.info("Waiting for player threads...")
-            for t in self.thr:
-                if not t == None:
-                    t.join()
+            for curr_thread in self.thr:
+                if curr_thread is not None:
+                    # timeout and kill mechanism?
+                    curr_thread.join()
 
             logging.info("Stopping security monitor.")
 
-# Top Level Security Monitor Management
-# there is an explanation for why this is calling "monitorTop."
-# the function "SecurityMontior" was actually developed before a monitor
-# top was envisioned to encapsulate it.
 class MonitorTop(mqtt.Client):
+    """
+    Top Level Security Monitor Management
+    there is an explanation for why this is calling "monitorTop."
+    the function "SecurityMontior" was actually developed before a monitor
+    top was envisioned to encapsulate it.
+    """
     class MTState(Enum):
+        """ This enumerates the player state machine """
         PLAYING = 0
         STOPPED = 1
         RESTART = 2
 
     # initialization function
     def __init__(self):
+        pgm_path = os.path.dirname(os.path.abspath(__file__))
+        with open(f"{pgm_path}/mon_config.json", "r", encoding="utf-8") as config_file:
+            self.config = MonitorTop.Config.from_json(config_file.read())
+
+        # tokens
+        self._tokens = []
+
+        # X11
+        self.disp = display.Display()
+        self.pm_able = False
+
         # automatic mode
         self.auto = threading.Event()
         self.auto.set()
         self.motion = threading.Event()
         # turns the screen off
-        self.screenOff = threading.Event()
+        self.screen_off = threading.Event()
         # stops video
-        self.stopPlaying = multiprocessing.Event()
+        self.stop_playing = multiprocessing.Event()
         # exits this program
-        self.monitorExit = threading.Event()
+        self.monitor_exit = threading.Event()
 
         # security monitor state
         self.mtstate = self.MTState.PLAYING
         self.last_mtstate = self.MTState.PLAYING
 
+        # UDP
+        self.udp = UDPListen(self.cmd_msg_apply)
+
+        # automatic control
+        self.amt = AutoMotionTimer(self.auto, self.motion, self.mon_on, self.mon_off)
+
         mqtt.Client.__init__(self, mqtt.CallbackAPIVersion.VERSION2)
 
     @dataclass_json
     @dataclass
-    # configuration dataclass
-    class config:
+    class Config:
+        """ configuration dataclass """
         name: str
         urls: list[str]
         tokens: list[str]
@@ -428,9 +452,9 @@ class MonitorTop(mqtt.Client):
         self.subscribe("daisy/event")
         self.subscribe("daisy/checkup")
 
-    # message authentication function
-    def msgAuth(self, msg, code):
-        logging.debug(f"MsgAuth called with: {msg} and {code}")
+    def msg_auth(self, msg, code):
+        """ message authentication function """
+        logging.debug(f"msg_auth called with: {msg} and {code}")
         match = False
         for token in self._tokens:
             calc = Utils.wr_hmac(msg, token)
@@ -441,18 +465,18 @@ class MonitorTop(mqtt.Client):
         # throws an assertion if there are no matches
         assert match
 
-    """
-    The JSON and HMAC key are contained in a `pair` from Kotlin
-    we run the output formatting of a pair through this particular
-    regex.
-    This output is somewhat equivalent for interpreting Python `tuple`s.
-
-    And the HMAC output is b64 encoded.
-    """
-    def cmdMsgApply(self, cmd):
+    def cmd_msg_apply(self, cmd):
+        """
+        The JSON and HMAC key are contained in a `pair` from Kotlin
+        we run the output formatting of a pair through this particular
+        regex.
+        This output is somewhat equivalent for interpreting Python `tuple`s.
+    
+        And the HMAC output is b64 encoded.
+        """
         retval = 1
         matches = re.fullmatch(r"\((\{.+\})\, (.+)\)", cmd)
-        if matches != None:
+        if matches is not None:
             logging.debug(f"The split strings are: {matches[1]} and {matches[2]}")
             try:
                 data = json.loads(matches[1])
@@ -460,65 +484,64 @@ class MonitorTop(mqtt.Client):
                 current_time = time.time()
                 sent_time = data["time"]
                 diff_time = current_time - sent_time
-                logging.debug(f"Current time: {current_time}, Sent time: {sent_time}, \
-                        Time Diff: {diff_time}")
+                logging.debug(f"Current time: {current_time}, Sent time: {sent_time}, "\
+                        f"Time Diff: {diff_time}")
                 assert abs(diff_time) <= 7200
 
-                self.msgAuth(matches[1], matches[2])
+                self.msg_auth(matches[1], matches[2])
                 # handle restarting
                 if "restart" in data:
                     refresh = data["restart"]
                     logging.info(f"Received monitor restart: {restart}")
                     if refresh:
-                        self.monRestart()
+                        self.mon_restart()
                         retval = 0
                 # handle automatic mode
-                elif "auto" in data and data["auto"] == True:
+                elif "auto" in data and data["auto"] is True:
                     self.auto.set()
                 elif "force" in data:
                     self.auto.clear()
                     force = data["force"]
                     logging.info(f"Received monitor status force: {force}")
                     if force:
-                        self.monOn()
+                        self.mon_on()
                         retval = 0
                     else:
-                        self.monOff()
+                        self.mon_off()
                         retval = 0
 
-            except (json.JSONDecodeError, AttributeError, AssertionError) as e:
-                logging.info(str(e)) # apparently not .toString
-                pass
+            except (json.JSONDecodeError, AttributeError, AssertionError) as exc:
+                logging.info(str(exc)) # apparently not .toString
 
         return retval
 
-    # turns the monitor on
-    def monOn(self):
-        if self.screenOff.is_set():
-            self.screenOff.clear()
-            self.stopPlaying.clear()
+    def mon_on(self):
+        """ turns the monitor on """
+        if self.screen_off.is_set():
+            self.screen_off.clear()
+            self.stop_playing.clear()
 
-    # turns the monitor off
-    def monOff(self):
-        if not self.screenOff.is_set():
-            self.screenOff.set()
-            self.stopPlaying.set()
+    def mon_off(self):
+        """ turns the monitor off """
+        if not self.screen_off.is_set():
+            self.screen_off.set()
+            self.stop_playing.set()
 
-    # restarts the internal video wall class
-    def monRestart(self):
-        self.stopPlaying.set()
+    def mon_restart(self):
+        """ restarts the internal video wall class """
+        self.stop_playing.set()
         self.mtstate = self.MTState.RESTART
 
-    # overloaded MQTT on_message function
     def on_message(self, mqttc, obj, msg):
+        """ overloaded MQTT on_message function """
         if msg.topic == "reporter/checkup_req":
             logging.info("Checkup requested.")
             # TODO checkup
         elif msg.topic == "secmon00/cmd":
             # do
             decoded = msg.payload.decode('utf-8')
-            logging.info("Display Commanded: " + decoded)
-            self.cmdMsgApply(decoded)
+            logging.info(f"Display Commanded: {decoded}")
+            self.cmd_msg_apply(decoded)
         elif msg.topic.startswith("daisy"):
             decoded = msg.payload.decode('utf-8')
             logging.debug(f"Daisy message received: {decoded}")
@@ -527,25 +550,25 @@ class MonitorTop(mqtt.Client):
                 logging.info("Received motion.")
                 self.motion.set()
 
-    # overloaded MQTT on_log function
     def on_log(self, mqttc, obj, level, string):
+        """ overloaded MQTT on_log function """
         if level == mqtt.MQTT_LOG_DEBUG:
-            logging.debug("PAHO MQTT DEBUG: " + string)
+            logging.debug(f"PAHO MQTT DEBUG: {string}")
         elif level == mqtt.MQTT_LOG_INFO:
-            logging.info("PAHO MQTT INFO: " + string)
+            logging.info(f"PAHO MQTT INFO: {string}")
         elif level == mqtt.MQTT_LOG_NOTICE:
-            logging.info("PAHO MQTT NOTICE: " + string)
+            logging.info(f"PAHO MQTT NOTICE: {string}")
         else:
-            logging.error("PAHO MQTT ERROR: " + string)
+            logging.error(f"PAHO MQTT ERROR: {string}")
 
-    # signal handling helper function
     def signal_handler(self, signum, frame):
+        """ signal handling helper function """
         logging.warning(f"Caught a deadly signal: {signum}!")
-        self.stopPlaying.set()
-        self.monitorExit.set()
+        self.stop_playing.set()
+        self.monitor_exit.set()
 
-    # main function
     def main(self):
+        """ main function """
         logging.basicConfig(level="DEBUG")
         logging.info("Starting Security Monitor Program")
         self._client_id = str.encode(self.config.name)
@@ -554,28 +577,26 @@ class MonitorTop(mqtt.Client):
         assert len(self.config.name)
 
         logging.info("Decoding tokens")
-        self._tokens = []
         for token in self.config.tokens:
             try:
                 self._tokens.append(Utils.token_decode(token))
-            except:
+            except AssertionError:
                 logging.error("Token not accepted")
-                pass
-        if not len(self._tokens):
+        if self._tokens:
             logging.critical("No tokens accepted.")
         else:
-            logging.debug(f"Tokens decoded")
+            logging.debug("Tokens decoded")
 
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
+
         # X11
-        self.disp = display.Display()
         try:
             self.pm_able = self.disp.dpms_capable()
         except ValueError:
-            self.capable = False
+            pass
         if not self.pm_able:
-            logging.warn("Display is not DPMS capable.")
+            logging.warning("Display is not DPMS capable.")
         logging.debug(f"DPMS capable: {self.pm_able}")
 
         if self.pm_able:
@@ -606,30 +627,24 @@ class MonitorTop(mqtt.Client):
         self.loop_start()
 
         logging.info("Starting UDP.")
-        self.udp = UDPListen(self.cmdMsgApply)
         self.udp.start()
 
         logging.info("Starting automatic control.")
-        self.amt = autoMotionTimer(self.auto, self.motion, self.monOn, self.monOff)
         self.amt.start()
-
-        logging.info("Turning screen on.")
-        self.monOn()
 
         #  security monitor splitter / windower initialize
         sm2 = None
-        while not self.monitorExit.is_set():
+        while not self.monitor_exit.is_set():
             if self.mtstate != self.last_mtstate:
                 logging.debug(f"Montior Loop State: {self.mtstate}")
             # execution
             if self.mtstate == self.MTState.PLAYING:
-                self.stopPlaying.clear()
-                sm2 = SecurityMonitor(self.stopPlaying, 1)
+                self.stop_playing.clear()
+                sm2 = SecurityMonitor(self.stop_playing, 1)
                 sm2.urls = self.config.urls
                 if self.pm_able:
                     logging.info("Turning Screen ON.")
-                    self.disp.dpms_force_level(dpms.DPMSModeOn)
-                    self.disp.sync()
+                    self.mon_on()
                 logging.info("Calling Splitter.")
                 sm2.main()
             #  restart or stopped
@@ -637,26 +652,25 @@ class MonitorTop(mqtt.Client):
                 if self.last_mtstate == self.MTState.PLAYING:
                     if self.pm_able:
                         logging.info("Turning Screen Off.")
-                        self.disp.dpms_force_level(dpms.DPMSModeOff)
-                        self.disp.sync()
+                        self.mon_off()
             if self.mtstate != self.MTState.PLAYING:
-                self.monitorExit.wait(1)
+                self.monitor_exit.wait(1)
 
             # save the last mtstate before computing state transitions
             self.last_mtstate = self.mtstate
 
             # transitions
             if self.mtstate == self.MTState.PLAYING:
-                if self.screenOff.is_set():
+                if self.screen_off.is_set():
                     self.mtstate = self.MTState.STOPPED
             elif self.mtstate == self.MTState.RESTART:
                 self.mtstate = self.MTState.PLAYING
             elif self.mtstate == self.MTState.STOPPED:
-                if not self.screenOff.is_set():
+                if not self.screen_off.is_set():
                     self.mtstate = self.MTState.PLAYING
 
         logging.info("Turning screen on.")
-        self.monOn()
+        self.mon_on()
 
         logging.info("Stopping automatic control.")
         self.amt.stop()
@@ -670,7 +684,4 @@ class MonitorTop(mqtt.Client):
 # main function for the entire program
 if __name__ == "__main__":
     monitor = MonitorTop()
-    pgm_path = os.path.dirname(os.path.abspath(__file__))
-    with open(pgm_path + "/mon_config.json", "r") as config_file:
-        monitor.config = MonitorTop.config.from_json(config_file.read())
     monitor.main()
