@@ -162,6 +162,8 @@ class UDPListen(threading.Thread):
         logging.info(f"Listening for UDP packets on: {self._ip}:{self._port}")
         # hacky way to end a while loop using python
         while True:
+            # select does not return automatically when the socket is closed, so a timeout must be
+            # specified so that it can return with the closed loop in `read`
             read, _, _ = select.select(self._inputs, [], [], 1)
             for s in read:
                 if self._sock != None and s == self._sock:
