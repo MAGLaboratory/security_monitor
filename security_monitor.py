@@ -1,5 +1,22 @@
 #!/usr/bin/env python3
 
+"""
+This is the main file of the security monitor program written by MAG Laboratory.
+
+The program is written with a goal to provide a video wall for the space.
+
+There are three command inputs for video wall on/off including:
+    - PIR
+    - UDP app
+    - MQTT
+
+This program makes extensive use of the python-mpv library.
+
+Display blanking is accomplished through use of the python Xlib for X11.  Wayland support is not
+a current priority but may become one if the base distributions for raspbian / armbian begin
+supporting only wayland.
+"""
+
 import mpv
 import multiprocessing
 import threading
@@ -23,37 +40,48 @@ import hashlib
 import hmac
 import time
 
-class utils:
+class Utils:
+    """
+    This class contains utilities for token management and command message validation.
+    Both MQTT and UDP should emit the same messages for validation.
+    """
     START = "magld_"
     MINCTLEN = 2
     B64CRCLEN = 6
+
     @staticmethod
     def b64enc(obj):
+        """ encode in b64 (and without the padding) """
         return base64.b64encode(obj).decode("utf-8").rstrip('=')
 
     @staticmethod
-    def b64pad(s):
-        return s + '=' * ((4 - len(s) % 4) % 4)
+    def b64pad(line):
+        """ pad for the python b64 library """
+        num = (4 - len(line) % 4) % 4
+        return f"{line}{'='*num}"
 
-    # token is returned as byte array
     @staticmethod
     def token_decode(token):
-        logging.debug(f"Token decode called with: {token}")
+        """ 
+        decode and validate token
+        return the "central token" as a byte array once validated 
+        """
+        logging.debug(f"Token decode utility called with: {token}")
         token = token.rstrip()
         # length verification
-        assert len(token) >= len(utils.START) + utils.MINCTLEN + utils.B64CRCLEN
+        assert len(token) >= len(Utils.START) + Utils.MINCTLEN + Utils.B64CRCLEN
         # header verification
-        assert token[0:len(utils.START)].lower() == utils.START
+        assert token[0:len(Utils.START)].lower() == Utils.START
         # retrieve token in bytes
         # pad token with magical number of pad characters to make base64 happy
-        central_token = utils.b64pad(token[len(utils.START):-utils.B64CRCLEN])
+        central_token = Utils.b64pad(token[len(Utils.START):-Utils.B64CRCLEN])
         central_token = base64.b64decode(str.encode(central_token))
 
-        end_checksum = token[-utils.B64CRCLEN:]
+        end_checksum = token[-Utils.B64CRCLEN:]
         # although the default is big endian for most libraries, we use little
         # endian here to keep consistent with the encoding schemes used by
         # other famous tokens...
-        calc_checksum = utils.b64enc(zlib.crc32(central_token).to_bytes(4, "little"))
+        calc_checksum = Utils.b64enc(zlib.crc32(central_token).to_bytes(4, "little"))
         # checksum verification
         assert calc_checksum == end_checksum
 
@@ -61,12 +89,13 @@ class utils:
 
     @staticmethod
     def wr_hmac(msg, token):
+        """ calculate the HMAC based on a token and the message """
         logging.debug(f"HMAC calculation utility called with: {msg} and {token}")
         obj = hmac.new(token, msg=str.encode(msg), digestmod=hashlib.sha256)
-        return utils.b64enc(obj.digest())
+        return Utils.b64enc(obj.digest())
 
-# Timer thread for monitor shutdown
 class autoMotionTimer(threading.Thread):
+    """ Timer thread for monitor shutdown """
     def __init__(self, autoEvent, inEvent, screenOn, screenOff):
         # "super" init
         threading.Thread.__init__(self)
@@ -80,6 +109,10 @@ class autoMotionTimer(threading.Thread):
         self._event = threading.Event()
 
     def run(self):
+        """
+        main run function for the timer thread
+        triggers to turn the monitor off at limit
+        """
         counter = 0
         limit = 900
         logging.debug("Automatic control start.")
@@ -106,11 +139,10 @@ class autoMotionTimer(threading.Thread):
 
         logging.debug("Automatic control stop.")
 
-
+    # stops the monitor thread
     def stop(self):
         logging.debug("Automatic control stop requested.")
         self._event.set()
-
 
 # My uwudp listener
 class UDPListen(threading.Thread):
@@ -125,6 +157,7 @@ class UDPListen(threading.Thread):
         self._sock.bind((self._ip, self._port))
         self._inputs = [self._sock]
 
+    # runs the UDP thread
     def run(self):
         logging.info(f"Listening for UDP packets on: {self._ip}:{self._port}")
         # hacky way to end a while loop using python
@@ -136,7 +169,7 @@ class UDPListen(threading.Thread):
                         data, addr = self._sock.recvfrom(1024)
                     except socket.error:
                         logging.debug("UDP socket closed.")
-                        break
+                        break # this break will end the for un-naturally
                     logging.info(f"Received packet from {addr[0]}:{addr[1]}")
                     decoded = data.decode()
                     logging.debug(f"Data: {decoded}")
@@ -145,12 +178,15 @@ class UDPListen(threading.Thread):
                         response = "OK"
 
                     self._sock.sendto(response.encode(), addr)
+                else:
+                    break
             else:
                 # skips the break at the end if the for loop was allowed to end naturally
                 continue
             # executes if the for loop was also broken
             break
 
+    # stops the UDP thread
     def stop(self):
         logging.debug("UDP stop called.")
         self._sock.close()
@@ -173,6 +209,7 @@ class SecurityMonitor():
         self._calc_div(div_idx)
 
     # Helper Functions
+    # generate position string based on divisions and index
     def _gen_pos(self, div, pos):
         # assumes that these values were already checked
         # position aligned to the left
@@ -187,6 +224,7 @@ class SecurityMonitor():
 
         return pos_str
 
+    # generate geometry string
     def _gen_geo_str(self, idx):
         # divisions
         # must be greater than 0
@@ -215,6 +253,7 @@ class SecurityMonitor():
 
         return geo_str
 
+    # calculate number of divisions based on a magic index number
     def _calc_div(self, index):
         assert index >= 0
         # this function expects a screen that is "wide" and not "tall"
@@ -230,6 +269,7 @@ class SecurityMonitor():
         self._div = [col, row]
         self._total = col * row
 
+    # index to position.  position is a tuple.
     def _idx2pos(self, idx):
         assert idx < self._total
         return [idx % self._div[0], idx // self._div[0]]
@@ -312,7 +352,7 @@ class SecurityMonitor():
         self.thr = [None] * (self._total*2)
         self.event_w = threading.Event()
 
-        try: 
+        try:
             # start initial players
             for i in range(self._total):
                 self._handle_player(i, False)
@@ -321,9 +361,9 @@ class SecurityMonitor():
             while not self._event_all.is_set():
                 time_cnt += 1
                 # TODO configure this
-                if (time_cnt >= 300):
+                if time_cnt >= 300:
                     time_cnt = 0
-                    # "handle" with the "started" parameter set to True 
+                    # "handle" with the "started" parameter set to True
                     # starts the replacement player which asks the replaced player to stop
                     self._handle_player(p_cnt)
                     self.thr[p_cnt].join()
@@ -338,12 +378,16 @@ class SecurityMonitor():
             logging.info("Stopping security monitor.")
 
 # Top Level Security Monitor Management
+# there is an explanation for why this is calling "monitorTop."
+# the function "SecurityMontior" was actually developed before a monitor
+# top was envisioned to encapsulate it.
 class MonitorTop(mqtt.Client):
     class MTState(Enum):
         PLAYING = 0
         STOPPED = 1
         RESTART = 2
 
+    # initialization function
     def __init__(self):
         # automatic mode
         self.auto = threading.Event()
@@ -364,6 +408,7 @@ class MonitorTop(mqtt.Client):
 
     @dataclass_json
     @dataclass
+    # configuration dataclass
     class config:
         name: str
         urls: list[str]
@@ -373,6 +418,7 @@ class MonitorTop(mqtt.Client):
         mqtt_timeout: Optional[int] = 60
         splitter_refresh_rate: Optional[int] = 300
 
+    # overloaded MQTT on_connect function
     def on_connect(self, mqttc, obj, flag, reason, properties):
         logging.info(f"MQTT connected: {reason}")
         self.subscribe("reporter/checkup_req")
@@ -380,18 +426,18 @@ class MonitorTop(mqtt.Client):
         self.subscribe("daisy/event")
         self.subscribe("daisy/checkup")
 
+    # message authentication function
     def msgAuth(self, msg, code):
         logging.debug(f"MsgAuth called with: {msg} and {code}")
         match = False
         for token in self._tokens:
-            calc = utils.wr_hmac(msg, token)
+            calc = Utils.wr_hmac(msg, token)
             logging.debug(f"Calculated hmac as: {calc}")
-            if (calc == code):
+            if calc == code:
                 match = True
                 break
-
-        assert(match)
-        # assert(any(util.hmac(msg, token) == code for token in self._tokens))
+        # throws an assertion if there are no matches
+        assert match
 
     """
     The JSON and HMAC key are contained in a `pair` from Kotlin
@@ -404,7 +450,7 @@ class MonitorTop(mqtt.Client):
     def cmdMsgApply(self, cmd):
         retval = 1
         matches = re.fullmatch(r"\((\{.+\})\, (.+)\)", cmd)
-        if (matches != None):
+        if matches != None:
             logging.debug(f"The split strings are: {matches[1]} and {matches[2]}")
             try:
                 data = json.loads(matches[1])
@@ -412,7 +458,8 @@ class MonitorTop(mqtt.Client):
                 current_time = time.time()
                 sent_time = data["time"]
                 diff_time = current_time - sent_time
-                logging.debug(f"Current time: {current_time}, Sent time: {sent_time}, Time Diff: {diff_time}")
+                logging.debug(f"Current time: {current_time}, Sent time: {sent_time}, \
+                        Time Diff: {diff_time}")
                 assert abs(diff_time) <= 7200
 
                 self.msgAuth(matches[1], matches[2])
@@ -422,7 +469,7 @@ class MonitorTop(mqtt.Client):
                     logging.info(f"Received monitor restart: {restart}")
                     if refresh:
                         self.monRestart()
-                        retval = 0 
+                        retval = 0
                 # handle automatic mode
                 elif "auto" in data and data["auto"] == True:
                     self.auto.set()
@@ -430,7 +477,7 @@ class MonitorTop(mqtt.Client):
                     self.auto.clear()
                     force = data["force"]
                     logging.info(f"Received monitor status force: {force}")
-                    if (force):
+                    if force:
                         self.monOn()
                         retval = 0
                     else:
@@ -443,26 +490,30 @@ class MonitorTop(mqtt.Client):
 
         return retval
 
+    # turns the monitor on
     def monOn(self):
         if self.screenOff.is_set():
             self.screenOff.clear()
             self.stopPlaying.clear()
 
+    # turns the monitor off
     def monOff(self):
         if not self.screenOff.is_set():
             self.screenOff.set()
             self.stopPlaying.set()
 
+    # restarts the internal video wall class
     def monRestart(self):
         self.stopPlaying.set()
         self.mtstate = self.MTState.RESTART
 
+    # overloaded MQTT on_message function
     def on_message(self, mqttc, obj, msg):
         if msg.topic == "reporter/checkup_req":
             logging.info("Checkup requested.")
             # TODO checkup
         elif msg.topic == "secmon00/cmd":
-            # do 
+            # do
             decoded = msg.payload.decode('utf-8')
             logging.info("Display Commanded: " + decoded)
             self.cmdMsgApply(decoded)
@@ -474,6 +525,7 @@ class MonitorTop(mqtt.Client):
                 logging.info("Received motion.")
                 self.motion.set()
 
+    # overloaded MQTT on_log function
     def on_log(self, mqttc, obj, level, string):
         if level == mqtt.MQTT_LOG_DEBUG:
             logging.debug("PAHO MQTT DEBUG: " + string)
@@ -484,29 +536,33 @@ class MonitorTop(mqtt.Client):
         else:
             logging.error("PAHO MQTT ERROR: " + string)
 
+    # signal handling helper function
     def signal_handler(self, signum, frame):
         logging.warning(f"Caught a deadly signal: {signum}!")
         self.stopPlaying.set()
         self.monitorExit.set()
 
+    # main function
     def main(self):
         logging.basicConfig(level="DEBUG")
         logging.info("Starting Security Monitor Program")
         self._client_id = str.encode(self.config.name)
 
+        # check if the configuration exists
+        assert len(self.config.name)
+
         logging.info("Decoding tokens")
         self._tokens = []
         for token in self.config.tokens:
             try:
-                self._tokens.append(utils.token_decode(token))
+                self._tokens.append(Utils.token_decode(token))
             except:
-                logging.error("Token not accepted: {token}")
+                logging.error("Token not accepted")
                 pass
-        #self._tokens = list(filter(utils.token_decode, ["magld_BK9puFlNlsY9d6y39b+1UOJtqaB7kLvSzEXXJg2N196Q"]))
         if not len(self._tokens):
             logging.critical("No tokens accepted.")
         else:
-            logging.debug(f"Tokens decoded: {self._tokens}")
+            logging.debug(f"Tokens decoded")
 
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
@@ -609,11 +665,8 @@ class MonitorTop(mqtt.Client):
         logging.info("Stopping MQTT.")
         self.loop_stop()
 
-
+# main function for the entire program
 if __name__ == "__main__":
-    # there is an explanation for why this is calling "monitorTop."
-    # the function "SecurityMontior" was actually developed before a monitor
-    # top was envisioned to encapsulate it.
     monitor = MonitorTop()
     pgm_path = os.path.dirname(os.path.abspath(__file__))
     with open(pgm_path + "/mon_config.json", "r") as config_file:
