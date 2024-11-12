@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from dataclasses_json import dataclass_json
 import mpv
 from Xlib import display
+from Xlib.ext import dpms
 import paho.mqtt.client as mqtt
 
 class Utils:
@@ -282,7 +283,8 @@ class SecurityMonitor():
         return [idx % self._div[0], idx // self._div[0]]
 
     # this thread actually contains the mpv stream player
-    def _play_thread(self, event_in, event_out, idx, url, name):
+    def _play_thread(self, event_in, event_out, name):
+        idx = name % self._total
         player = mpv.MPV()
         # a series of configuration options that make the player act like a
         # security monitor
@@ -294,7 +296,7 @@ class SecurityMonitor():
         geo_str = self._gen_geo_str(idx)
         player.geometry = geo_str
         # enter the camera URL and wait until it starts to play
-        player.play(url)
+        player.play(self.urls[idx])
         # wait until the player is playing
         # timeout added here to terminate if the URL is not found
         try:
@@ -337,14 +339,10 @@ class SecurityMonitor():
             # state where the players are initializing
             i_play = last_p
             last_p = (last_p + self._total) % (self._total * 2)
-        pos = last_p % self._total
-        url = self.urls[pos]
         logging.info(f"Starting player: {i_play}")
         self.thr[i_play] = multiprocessing.Process(target=self._play_thread, args=(
             self.evt[i_play],
             self.evt[last_p],
-            pos,
-            url,
             i_play))
         self.thr[i_play].daemon = True
         self.evt[i_play].clear()
@@ -400,6 +398,7 @@ class MonitorTop(mqtt.Client):
     def __init__(self):
         pgm_path = os.path.dirname(os.path.abspath(__file__))
         with open(f"{pgm_path}/mon_config.json", "r", encoding="utf-8") as config_file:
+            # pylint: disable-next=no-member
             self.config = MonitorTop.Config.from_json(config_file.read())
 
         # tokens
@@ -446,6 +445,7 @@ class MonitorTop(mqtt.Client):
 
     # overloaded MQTT on_connect function
     def on_connect(self, mqttc, obj, flag, reason, properties):
+        # pylint: disable=invalid-overridden-method, unused-argument, arguments-differ, too-many-arguments
         logging.info(f"MQTT connected: {reason}")
         self.subscribe("reporter/checkup_req")
         self.subscribe("secmon00/cmd")
@@ -492,13 +492,14 @@ class MonitorTop(mqtt.Client):
                 # handle restarting
                 if "restart" in data:
                     refresh = data["restart"]
-                    logging.info(f"Received monitor restart: {restart}")
+                    logging.info(f"Received monitor restart: {refresh}")
                     if refresh:
                         self.mon_restart()
                         retval = 0
                 # handle automatic mode
                 elif "auto" in data and data["auto"] is True:
                     self.auto.set()
+                    retval = 0
                 elif "force" in data:
                     self.auto.clear()
                     force = data["force"]
@@ -533,10 +534,13 @@ class MonitorTop(mqtt.Client):
         self.mtstate = self.MTState.RESTART
 
     def on_message(self, mqttc, obj, msg):
+        # pylint: disable=invalid-overridden-method, unused-argument, arguments-differ
         """ overloaded MQTT on_message function """
         if msg.topic == "reporter/checkup_req":
             logging.info("Checkup requested.")
-            # TODO checkup
+            dict_msg = {}
+            dict_msg[f"{self.config.name} On"] = int(not self.screen_off.is_set())
+            self.publish(f"{self.config.name}/checkup", json.dumps(dict_msg))
         elif msg.topic == "secmon00/cmd":
             # do
             decoded = msg.payload.decode('utf-8')
@@ -551,6 +555,7 @@ class MonitorTop(mqtt.Client):
                 self.motion.set()
 
     def on_log(self, mqttc, obj, level, string):
+        # pylint: disable=invalid-overridden-method, unused-argument, arguments-differ
         """ overloaded MQTT on_log function """
         if level == mqtt.MQTT_LOG_DEBUG:
             logging.debug(f"PAHO MQTT DEBUG: {string}")
@@ -562,6 +567,7 @@ class MonitorTop(mqtt.Client):
             logging.error(f"PAHO MQTT ERROR: {string}")
 
     def signal_handler(self, signum, frame):
+        # pylint: disable=unused-argument
         """ signal handling helper function """
         logging.warning(f"Caught a deadly signal: {signum}!")
         self.stop_playing.set()
@@ -644,7 +650,8 @@ class MonitorTop(mqtt.Client):
                 sm2.urls = self.config.urls
                 if self.pm_able:
                     logging.info("Turning Screen ON.")
-                    self.mon_on()
+                    self.disp.dpms_force_level(dpms.DPMSModeOn)
+                    self.disp.sync()
                 logging.info("Calling Splitter.")
                 sm2.main()
             #  restart or stopped
@@ -652,7 +659,8 @@ class MonitorTop(mqtt.Client):
                 if self.last_mtstate == self.MTState.PLAYING:
                     if self.pm_able:
                         logging.info("Turning Screen Off.")
-                        self.mon_off()
+                        self.disp.dpms_force_level(dpms.DPMSModeOff)
+                        self.disp.sync()
             if self.mtstate != self.MTState.PLAYING:
                 self.monitor_exit.wait(1)
 
