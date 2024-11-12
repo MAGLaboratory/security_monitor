@@ -5,19 +5,8 @@ on: [push]
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.9", "3.10"]
     steps:
-    - uses: actions/checkout@v4
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v3
-      with:
-        python-version: ${{ matrix.python-version }}
-    - name: Python Dependency Installation
-      uses: py-actions/py-dependency-install@v4.1.0
-      with:
-        path: "requirements.txt"
-    - name: Analysing the code with pylint
-      run: |
-        pylint $(git ls-files '*.py')
+      - uses: Silleellie/pylint-github-action@v2
+        with:
+          lint-path: .
+          python-version: 3.11
