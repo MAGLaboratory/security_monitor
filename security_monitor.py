@@ -45,7 +45,7 @@ import paho.mqtt.client as mqtt
 class Utils:
     """
     This class contains utilities for token management and command message validation.
-    Both MQTT and UDP should emit the same messages for validation.
+    Both MQTT and UDP should provide the same messages for validation.
     """
     START = "magld_"
     MINCTLEN = 2
@@ -146,7 +146,10 @@ class AutoMotionTimer(threading.Thread):
         self._event.set()
 
 class UDPListen(threading.Thread):
-    """ My uwudp listener """
+    """
+    My uwudp listener
+    The maximum packet size is 1024 and there are no provisions for lengthening this.
+    """
     def __init__(self, msgDecode):
         threading.Thread.__init__(self)
         # callbacks
