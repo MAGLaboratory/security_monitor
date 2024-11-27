@@ -211,12 +211,13 @@ class SecurityMonitor():
     #    2 -> 2x2
     #    3 -> 3x2
     #    4 -> 3x3
-    def __init__(self, quit_event, div_idx):
+    def __init__(self, quit_event, splitter_refresh_rate, div_idx):
+        self.refresh_rate = splitter_refresh_rate
         self._event_all = quit_event
         self._calc_div(div_idx)
 
         self.evt = [multiprocessing.Event() for _ in range(self._total*2)]
-        self.thr = [None] * (self._total*2)
+        self.proc = [None] * (self._total*2)
         self.event_w = threading.Event()
 
     # Helper Functions
@@ -285,8 +286,8 @@ class SecurityMonitor():
         assert idx < self._total
         return [idx % self._div[0], idx // self._div[0]]
 
-    # this thread actually contains the mpv stream player
-    def _play_thread(self, event_in, event_out, name):
+    # this process actually contains the mpv stream player
+    def _play_process(self, event_in, event_out, name):
         idx = name % self._total
         player = mpv.MPV()
         # a series of configuration options that make the player act like a
@@ -321,7 +322,7 @@ class SecurityMonitor():
                     # this is normal.  the function should be timing out.
                     continue
                 except mpv.ShutdownError:
-                    logging.error("Unexpected player shutdown.  Shutting down.")
+                    logging.critical("Unexpected player shutdown.  Shutting down.")
                     self._event_all.set()
                 except KeyboardInterrupt:
                     logging.warning("Player caught Keyboard Interrupt.")
@@ -343,14 +344,14 @@ class SecurityMonitor():
             i_play = last_p
             last_p = (last_p + self._total) % (self._total * 2)
         logging.info(f"Starting player: {i_play}")
-        self.thr[i_play] = multiprocessing.Process(target=self._play_thread, args=(
+        self.proc[i_play] = multiprocessing.Process(target=self._play_process, args=(
             self.evt[i_play],
             self.evt[last_p],
             i_play))
-        self.thr[i_play].daemon = True
+        self.proc[i_play].daemon = True
         self.evt[i_play].clear()
-        self.thr[i_play].start()
-        logging.info(f"Player thread started: {i_play}")
+        self.proc[i_play].start()
+        logging.info(f"Player process started: {i_play}")
 
     def main(self):
         """ main / run function within the class """
@@ -365,22 +366,27 @@ class SecurityMonitor():
             p_cnt = 0
             while not self._event_all.is_set():
                 time_cnt += 1
-                # TODO configure this
-                if time_cnt >= 300:
+                if time_cnt >= self.refresh_rate:
                     time_cnt = 0
                     # "handle" with the "started" parameter set to True
                     # starts the replacement player which asks the replaced player to stop
                     self._handle_player(p_cnt)
-                    # TODO: timeout and kill mechanism?
-                    self.thr[p_cnt].join()
+                    self.proc[p_cnt].join(15)
+                    # the process is not terminated
+                    if self.proc[p_cnt].exitcode is None:
+                        logging.error(f"Forcefully stopping stuck player {p_cnt}")
+                        self.proc[p_cnt].kill()
                     p_cnt = (p_cnt + 1) % (self._total*2)
                 self.event_w.wait(1)
         finally:
-            logging.info("Waiting for player threads...")
-            for curr_thread in self.thr:
-                if curr_thread is not None:
-                    # timeout and kill mechanism?
-                    curr_thread.join()
+            logging.info("Waiting for player processes...")
+            for curr_proc in self.proc:
+                if curr_proc is not None:
+                    curr_proc.join(15)
+                    # the process is not terminated
+                    if self.proc[p_cnt].exitcode is None:
+                        logging.error(f"Forcefully stopping stuck player {p_cnt}")
+                        self.proc[p_cnt].kill()
 
             logging.info("Stopping security monitor.")
 
@@ -649,7 +655,7 @@ class MonitorTop(mqtt.Client):
             # execution
             if self.mtstate == self.MTState.PLAYING:
                 self.stop_playing.clear()
-                sm2 = SecurityMonitor(self.stop_playing, 1)
+                sm2 = SecurityMonitor(self.stop_playing, self.config.splitter_refresh_rate, 1)
                 sm2.urls = self.config.urls
                 if self.pm_able:
                     logging.info("Turning Screen ON.")
