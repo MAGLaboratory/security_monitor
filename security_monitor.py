@@ -395,6 +395,7 @@ class SecurityMonitor():
         """Sets the URLs used by the player based on the function argument"""
         self.urls = copy.deepcopy(urls)
 
+# pylint: disable-next=too-many-instance-attributes
 class MonitorTop(mqtt.Client):
     """
     Top Level Security Monitor Management
@@ -587,6 +588,45 @@ class MonitorTop(mqtt.Client):
         self.stop_playing.set()
         self.monitor_exit.set()
 
+    def _mt_loop(self):
+        """ main function helper loop, also the state machine """
+        if self.mtstate != self.last_mtstate:
+            logging.debug(f"Montior Loop State: {self.mtstate}")
+        # execution
+        if self.mtstate == self.MTState.PLAYING:
+            self.stop_playing.clear()
+            sm2 = SecurityMonitor(self.stop_playing, self.config.splitter_refresh_rate, 1)
+            sm2.urls = self.config.urls
+            if self.pm_able:
+                logging.info("Turning Screen ON.")
+                self.disp.dpms_force_level(dpms.DPMSModeOn)
+                self.disp.sync()
+            logging.info("Calling Splitter.")
+            sm2.main()
+        #  restart or stopped
+        if self.mtstate == self.MTState.STOPPED:
+            if self.last_mtstate == self.MTState.PLAYING:
+                if self.pm_able:
+                    logging.info("Turning Screen Off.")
+                    self.disp.dpms_force_level(dpms.DPMSModeOff)
+                    self.disp.sync()
+        if self.mtstate != self.MTState.PLAYING:
+            self.monitor_exit.wait(1)
+
+        # save the last mtstate before computing state transitions
+        self.last_mtstate = self.mtstate
+
+        # transitions
+        if self.mtstate == self.MTState.PLAYING:
+            if self.screen_off.is_set():
+                self.mtstate = self.MTState.STOPPED
+        elif self.mtstate == self.MTState.RESTART:
+            self.mtstate = self.MTState.PLAYING
+        elif self.mtstate == self.MTState.STOPPED:
+            if not self.screen_off.is_set():
+                self.mtstate = self.MTState.PLAYING
+
+
     def main(self):
         """ main function """
         logging.basicConfig(level="DEBUG")
@@ -653,49 +693,16 @@ class MonitorTop(mqtt.Client):
         self.amt.start()
 
         #  security monitor splitter / windower initialize
-        sm2 = None
         while not self.monitor_exit.is_set():
-            if self.mtstate != self.last_mtstate:
-                logging.debug(f"Montior Loop State: {self.mtstate}")
-            # execution
-            if self.mtstate == self.MTState.PLAYING:
-                self.stop_playing.clear()
-                sm2 = SecurityMonitor(self.stop_playing, self.config.splitter_refresh_rate, 1)
-                sm2.urls = self.config.urls
-                if self.pm_able:
-                    logging.info("Turning Screen ON.")
-                    self.disp.dpms_force_level(dpms.DPMSModeOn)
-                    self.disp.sync()
-                logging.info("Calling Splitter.")
-                sm2.main()
-            #  restart or stopped
-            if self.mtstate == self.MTState.STOPPED:
-                if self.last_mtstate == self.MTState.PLAYING:
-                    if self.pm_able:
-                        logging.info("Turning Screen Off.")
-                        self.disp.dpms_force_level(dpms.DPMSModeOff)
-                        self.disp.sync()
-            if self.mtstate != self.MTState.PLAYING:
-                self.monitor_exit.wait(1)
+            self._mt_loop()
 
-            # save the last mtstate before computing state transitions
-            self.last_mtstate = self.mtstate
-
-            # transitions
-            if self.mtstate == self.MTState.PLAYING:
-                if self.screen_off.is_set():
-                    self.mtstate = self.MTState.STOPPED
-            elif self.mtstate == self.MTState.RESTART:
-                self.mtstate = self.MTState.PLAYING
-            elif self.mtstate == self.MTState.STOPPED:
-                if not self.screen_off.is_set():
-                    self.mtstate = self.MTState.PLAYING
-
-        logging.info("Turning screen on.")
-        self.mon_on()
+        logging.info("Monitor top state machine loop exited.")
 
         logging.info("Stopping automatic control.")
         self.amt.stop()
+
+        logging.info("Turning screen on.")
+        self.mon_on()
 
         logging.info("Stopping UDP.")
         self.udp.stop()
