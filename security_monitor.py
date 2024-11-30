@@ -33,6 +33,7 @@ import zlib
 import hashlib
 import hmac
 import time
+import copy
 from enum import Enum
 from typing import Optional
 from dataclasses import dataclass
@@ -216,8 +217,8 @@ class SecurityMonitor():
         self._event_all = quit_event
         self._calc_div(div_idx)
 
-        self.evt = [multiprocessing.Event() for _ in range(self._total*2)]
-        self.proc = [None] * (self._total*2)
+        self.evt = [multiprocessing.Event() for _ in range(self._div[2]*2)]
+        self.proc = [None] * (self._div[2]*2)
         self.event_w = threading.Event()
 
     # Helper Functions
@@ -243,7 +244,7 @@ class SecurityMonitor():
         assert self._div[0] > 0
         assert self._div[1] > 0
         # must have columns and rows in division
-        assert len(self._div) == 2
+        assert len(self._div) == 3
 
         # position
         # calculate column and row
@@ -278,17 +279,17 @@ class SecurityMonitor():
             else:
                 row += 1
 
-        self._div = [col, row]
-        self._total = col * row
+        # final element is the total number of players visible
+        self._div = [col, row, col * row]
 
     # index to position.  position is a tuple.
     def _idx2pos(self, idx):
-        assert idx < self._total
+        assert idx < self._div[2]
         return [idx % self._div[0], idx // self._div[0]]
 
     # this process actually contains the mpv stream player
     def _play_process(self, event_in, event_out, name):
-        idx = name % self._total
+        idx = name % self._div[2]
         player = mpv.MPV()
         # a series of configuration options that make the player act like a
         # security monitor
@@ -336,13 +337,13 @@ class SecurityMonitor():
     def _handle_player(self, last_p, running = True):
         # inital player logic
         if running:
-            # self._total is the number of players visible.
-            # the actual number of players is self._total * 2
-            i_play = (last_p + self._total) % (self._total * 2)
+            # self._div[2] is the number of players visible.
+            # the actual number of players is self._div[2] * 2
+            i_play = (last_p + self._div[2]) % (self._div[2] * 2)
         else:
             # state where the players are initializing
             i_play = last_p
-            last_p = (last_p + self._total) % (self._total * 2)
+            last_p = (last_p + self._div[2]) % (self._div[2] * 2)
         logging.info(f"Starting player: {i_play}")
         self.proc[i_play] = multiprocessing.Process(target=self._play_process, args=(
             self.evt[i_play],
@@ -356,11 +357,11 @@ class SecurityMonitor():
     def main(self):
         """ main / run function within the class """
         logging.info("Starting security monitor")
-        assert len(self.urls) >= self._total
+        assert len(self.urls) >= self._div[2]
 
         try:
             # start initial players
-            for i in range(self._total):
+            for i in range(self._div[2]):
                 self._handle_player(i, False)
             time_cnt = 0
             p_cnt = 0
@@ -376,7 +377,7 @@ class SecurityMonitor():
                     if self.proc[p_cnt].exitcode is None:
                         logging.error(f"Forcefully stopping stuck player {p_cnt}")
                         self.proc[p_cnt].kill()
-                    p_cnt = (p_cnt + 1) % (self._total*2)
+                    p_cnt = (p_cnt + 1) % (self._div[2]*2)
                 self.event_w.wait(1)
         finally:
             logging.info("Waiting for player processes...")
@@ -389,6 +390,10 @@ class SecurityMonitor():
                         self.proc[p_cnt].kill()
 
             logging.info("Stopping security monitor.")
+
+    def set_url(self, urls):
+        """Sets the URLs used by the player based on the function argument"""
+        self.urls = copy.deepcopy(urls)
 
 class MonitorTop(mqtt.Client):
     """
