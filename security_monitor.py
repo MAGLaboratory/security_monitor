@@ -316,7 +316,7 @@ class SecurityMonitor():
             event_out.set()
 
         try:
-            while not self._event_all.is_set() and not event_in.is_set():
+            while not event_in.is_set():
                 try:
                     player.wait_for_event(None, timeout=1)
                 except TimeoutError:
@@ -375,21 +375,25 @@ class SecurityMonitor():
                     self.proc[p_cnt].join(15)
                     # the process is not terminated
                     if self.proc[p_cnt].exitcode is None:
-                        logging.error(f"Forcefully stopping stuck player {p_cnt}")
+                        logging.error(f"Killing stuck player {p_cnt}")
                         self.proc[p_cnt].kill()
                     p_cnt = (p_cnt + 1) % (self._div[2]*2)
                 self.event_w.wait(1)
         finally:
-            logging.info("Waiting for player processes...")
-            for curr_proc in self.proc:
-                if curr_proc is not None:
-                    curr_proc.join(15)
-                    # the process is not terminated
-                    if self.proc[p_cnt].exitcode is None:
-                        logging.error(f"Forcefully stopping stuck player {p_cnt}")
-                        self.proc[p_cnt].kill()
+            logging.info("Asking player processes to exit...")
+            for cur_ev in self.evt:
+                cur_ev.set()
 
-            logging.info("Stopping security monitor.")
+            logging.info("Waiting for player processes...")
+            for curr_proc, _ in enumerate(self.proc):
+                if self.proc[curr_proc] is not None:
+                    self.proc[curr_proc].join(15)
+                    # the process is not terminated
+                    if self.proc[curr_proc].exitcode is None:
+                        logging.error(f"Killing stuck player {curr_proc}")
+                        self.proc[curr_proc].kill()
+
+            logging.info("Security Monitor Splitter stopped.")
 
     def set_url(self, urls):
         """Sets the URLs used by the player based on the function argument"""
@@ -459,8 +463,8 @@ class MonitorTop(mqtt.Client):
         splitter_refresh_rate: Optional[int] = 300
 
     # overloaded MQTT on_connect function
-    def on_connect(self, mqttc, obj, flag, reason, properties):
-        # pylint: disable=invalid-overridden-method, unused-argument, arguments-differ, too-many-arguments
+    def on_connect(self, _, __, ___, reason, ____):
+        # pylint: disable=invalid-overridden-method, arguments-differ
         logging.info(f"MQTT connected: {reason}")
         self.subscribe("reporter/checkup_req")
         self.subscribe("secmon00/cmd")
@@ -548,8 +552,8 @@ class MonitorTop(mqtt.Client):
         self.stop_playing.set()
         self.mtstate = self.MTState.RESTART
 
-    def on_message(self, mqttc, obj, msg):
-        # pylint: disable=invalid-overridden-method, unused-argument, arguments-differ
+    def on_message(self, _, __, msg):
+        # pylint: disable=invalid-overridden-method, arguments-differ
         """ overloaded MQTT on_message function """
         if msg.topic == "reporter/checkup_req":
             logging.info("Checkup requested.")
@@ -569,8 +573,8 @@ class MonitorTop(mqtt.Client):
                 logging.info("Received motion.")
                 self.motion.set()
 
-    def on_log(self, mqttc, obj, level, string):
-        # pylint: disable=invalid-overridden-method, unused-argument, arguments-differ
+    def on_log(self, _, __, level, string):
+        # pylint: disable=invalid-overridden-method, arguments-differ
         """ overloaded MQTT on_log function """
         if level == mqtt.MQTT_LOG_DEBUG:
             logging.debug(f"PAHO MQTT DEBUG: {string}")
