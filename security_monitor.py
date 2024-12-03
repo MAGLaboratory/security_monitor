@@ -228,7 +228,7 @@ class SecurityMonitor():
     def __init__(self, quit_queue, splitter_refresh_rate, div_idx):
         self.refresh_rate = splitter_refresh_rate
         self._queue_all = quit_queue
-        self._calc_div(div_idx)
+        self._div = self.calc_div(div_idx)
 
         self.que = [multiprocessing.Queue() for _ in range(self._div[2]*2)]
         self.proc = [None] * (self._div[2]*2)
@@ -278,21 +278,24 @@ class SecurityMonitor():
 
         return geo_str
 
+    @staticmethod
     # calculate number of divisions based on a magic index number
-    def _calc_div(self, index):
+    # returns : a three-element list consisting of columns, rows, and total players
+    def calc_div(index):
         assert index >= 0
         # this function expects a screen that is "wide" and not "tall"
         col = 1
         row = 1
         while index != 0:
             index -= 1
+            # column number priority
             if col <= row:
                 col += 1
             else:
                 row += 1
 
         # final element is the total number of players visible
-        self._div = [col, row, col * row]
+        return [col, row, col * row]
 
     # index to position.  position is a tuple.
     def _idx2pos(self, idx):
@@ -306,12 +309,14 @@ class SecurityMonitor():
         player = mpv.MPV()
         # a series of configuration options that make the player act like a
         # security monitor
+        # empirically determined on the maglab internal network
         player.network_timeout = 10
         player.border = "no"
         player.keepaspect = "no"
         player.ao = "pulseaudio"
         player.profile = "low-latency"
         player.geometry = geo_str
+        player.loop_playlist = "inf"
         # enter the camera URL and wait until it starts to play
         player.play(self.urls[idx])
         # wait until the player is playing
@@ -561,13 +566,13 @@ class MonitorTop(mqtt.Client):
         return retval
 
     def mon_on(self):
-        """ turns the monitor on """
+        """ turns the monitor on. this function changes flags that control the state machine """
         if self.screen_off.is_set():
             self.screen_off.clear()
             Utils.clear_queue(self.stop_playing)
 
     def mon_off(self):
-        """ turns the monitor off """
+        """ turns the monitor off. this function changes flags that control the state machine """
         if not self.screen_off.is_set():
             self.screen_off.set()
             self.stop_playing.put(True)
