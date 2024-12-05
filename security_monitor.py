@@ -279,9 +279,11 @@ class SecurityMonitor():
         return geo_str
 
     @staticmethod
-    # calculate number of divisions based on a magic index number
-    # returns : a three-element list consisting of columns, rows, and total players
     def calc_div(index):
+        """ 
+        calculate number of divisions based on a magic index number
+        returns : a three-element list consisting of columns, rows, and total players
+        """
         assert index >= 0
         # this function expects a screen that is "wide" and not "tall"
         col = 1
@@ -483,6 +485,7 @@ class MonitorTop(mqtt.Client):
     @dataclass_json
     @dataclass
     class Config:
+        # pylint: disable=too-many-instance-attributes
         """ configuration dataclass """
         name: str
         urls: list[str]
@@ -491,6 +494,7 @@ class MonitorTop(mqtt.Client):
         mqtt_port: Optional[int] = 1883
         mqtt_timeout: Optional[int] = 60
         splitter_refresh_rate: Optional[int] = 300
+        loglevel: Optional[str] = None
 
     # overloaded MQTT on_connect function
     def on_connect(self, _, __, ___, reason, ____):
@@ -615,8 +619,7 @@ class MonitorTop(mqtt.Client):
         else:
             logging.error(f"PAHO MQTT ERROR: {string}")
 
-    def signal_handler(self, signum, frame):
-        # pylint: disable=unused-argument
+    def signal_handler(self, signum, _):
         """ signal handling helper function """
         logging.warning(f"Caught a deadly signal: {signum}!")
         self.stop_playing.put(True)
@@ -662,8 +665,15 @@ class MonitorTop(mqtt.Client):
 
 
     def main(self):
+        # pylint: disable=too-many-statements
         """ main function """
-        logging.basicConfig(level="DEBUG")
+        try:
+            if isinstance(logging.getLevelName(self.config.loglevel.upper()), int):
+                logging.basicConfig(level=self.config.loglevel.upper())
+            else:
+                logging.warning("Log level not configured. Defaulting to WARNING.")
+        except (KeyError, AttributeError) as err:
+            logging.warning(f"Log level not configured. Defaulting to WARNING. Caught: {err}")
         logging.info("Starting Security Monitor Program")
         self._client_id = str.encode(self.config.name)
 
