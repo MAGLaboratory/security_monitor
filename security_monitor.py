@@ -35,7 +35,7 @@ import hmac
 import time
 import copy
 import queue
-from enum import Enum
+from enum import IntEnum
 from typing import Optional
 from dataclasses import dataclass
 from dataclasses_json import dataclass_json
@@ -105,15 +105,16 @@ class Utils:
 
 class AutoMotionTimer(threading.Thread):
     """ Timer thread for monitor shutdown """
-    def __init__(self, autoEvent, inEvent, screenOn, screenOff):
+    def __init__(self, bools, indices, functions):
         # "super" init
         threading.Thread.__init__(self)
         # callbacks
-        self._on_fun = screenOn
-        self._off_fun = screenOff
+        self._on_fun = functions[0]
+        self._off_fun = functions[1]
         # input
-        self._auto = autoEvent
-        self._input = inEvent
+        self._bools = bools
+        self._auto_idx = indices[0]
+        self._in_idx = indices[1]
         # my veriables
         self._event = threading.Event()
 
@@ -124,19 +125,19 @@ class AutoMotionTimer(threading.Thread):
         """
         counter = 0
         limit = 900
-        last = self._auto.is_set()
+        last = self._bools[self._auto_idx]
         logging.debug("Automatic control start.")
         while not self._event.wait(1):
             # get input status and clear it
-            trig = self._input.is_set()
+            trig = self._bools[self._in_idx]
             if trig:
-                self._input.clear()
+                self._bools[self._in_idx] = False
 
             # increment counter until limit
             if counter < limit:
                 counter += 1
 
-            if self._auto.is_set():
+            if self._bools[self._auto_idx]:
                 # if triggered, turn on and reset counter
                 if trig:
                     counter = 0
@@ -151,7 +152,7 @@ class AutoMotionTimer(threading.Thread):
                     # screen on
                     self._on_fun()
 
-            last = self._auto.is_set()
+            last = self._bools[self._auto_idx]
 
         logging.debug("Automatic control stop.")
 
@@ -439,11 +440,18 @@ class MonitorTop(mqtt.Client):
     the function "SecurityMontior" was actually developed before a monitor
     top was envisioned to encapsulate it.
     """
-    class MTState(Enum):
+    class MTState(IntEnum):
         """ This enumerates the player state machine """
         PLAYING = 0
         STOPPED = 1
         RESTART = 2
+
+    class BLIndex(IntEnum):
+        """ Enumerates the index of booleans in the list (BL) """
+        PM_ABLE = 0
+        AUTO = 1
+        MOTION = 2
+        SCREEN_OFF = 3
 
     # initialization function
     def __init__(self):
@@ -457,14 +465,14 @@ class MonitorTop(mqtt.Client):
 
         # X11
         self.disp = display.Display()
-        self.pm_able = False
 
-        # automatic mode
-        self.auto = threading.Event()
-        self.auto.set()
-        self.motion = threading.Event()
-        # turns the screen off
-        self.screen_off = threading.Event()
+        # boolean flags
+        # PM_ABLE
+        # AUTO
+        # MOTION
+        # SCREEN_OFF
+        self.bools = [False, True, False, False]
+
         # stops video
         self.stop_playing = multiprocessing.Queue()
         # exits this program
@@ -478,7 +486,8 @@ class MonitorTop(mqtt.Client):
         self.udp = UDPListen(self.cmd_msg_apply)
 
         # automatic control
-        self.amt = AutoMotionTimer(self.auto, self.motion, self.mon_on, self.mon_off)
+        self.amt = AutoMotionTimer(self.bools, [self.BLIndex.AUTO, self.BLIndex.MOTION],
+                [self.mon_on, self.mon_off])
 
         mqtt.Client.__init__(self, mqtt.CallbackAPIVersion.VERSION2)
 
@@ -551,10 +560,10 @@ class MonitorTop(mqtt.Client):
                         retval = 0
                 # handle automatic mode
                 elif "auto" in data and data["auto"] is True:
-                    self.auto.set()
+                    self.bools[self.BLIndex.AUTO] = True
                     retval = 0
                 elif "force" in data:
-                    self.auto.clear()
+                    self.bools[self.BLIndex.AUTO] = False
                     force = data["force"]
                     logging.info(f"Received monitor status force: {force}")
                     if force:
@@ -571,14 +580,14 @@ class MonitorTop(mqtt.Client):
 
     def mon_on(self):
         """ turns the monitor on. this function changes flags that control the state machine """
-        if self.screen_off.is_set():
-            self.screen_off.clear()
+        if self.bools[self.BLIndex.SCREEN_OFF]:
+            self.bools[self.BLIndex.SCREEN_OFF] = False
             Utils.clear_queue(self.stop_playing)
 
     def mon_off(self):
         """ turns the monitor off. this function changes flags that control the state machine """
-        if not self.screen_off.is_set():
-            self.screen_off.set()
+        if self.bools[self.BLIndex.SCREEN_OFF] is False:
+            self.bools[self.BLIndex.SCREEN_OFF] = True
             self.stop_playing.put(True)
 
     def mon_restart(self):
@@ -592,7 +601,7 @@ class MonitorTop(mqtt.Client):
         if msg.topic == "reporter/checkup_req":
             logging.info("Checkup requested.")
             dict_msg = {}
-            dict_msg[f"{self.config.name} On"] = int(not self.screen_off.is_set())
+            dict_msg[f"{self.config.name} On"] = int(not self.bools[self.BLIndex.SCREEN_OFF])
             self.publish(f"{self.config.name}/checkup", json.dumps(dict_msg))
         elif msg.topic == "secmon00/cmd":
             # do
@@ -605,7 +614,7 @@ class MonitorTop(mqtt.Client):
             data = json.loads(decoded)
             if "ConfRm Motion" in data and data["ConfRm Motion"] == 1:
                 logging.info("Received motion.")
-                self.motion.set()
+                self.bools[self.BLIndex.MOTION] = True
 
     def on_log(self, _, __, level, string):
         # pylint: disable=invalid-overridden-method, arguments-differ
@@ -634,7 +643,7 @@ class MonitorTop(mqtt.Client):
             Utils.clear_queue(self.stop_playing)
             sm2 = SecurityMonitor(self.stop_playing, self.config.splitter_refresh_rate, 1)
             sm2.urls = self.config.urls
-            if self.pm_able:
+            if self.bools[self.BLIndex.PM_ABLE]:
                 logging.info("Turning Screen ON.")
                 self.disp.dpms_force_level(dpms.DPMSModeOn)
                 self.disp.sync()
@@ -643,7 +652,7 @@ class MonitorTop(mqtt.Client):
         #  restart or stopped
         if self.mtstate == self.MTState.STOPPED:
             if self.last_mtstate == self.MTState.PLAYING:
-                if self.pm_able:
+                if self.bools[self.BLIndex.PM_ABLE]:
                     logging.info("Turning Screen Off.")
                     self.disp.dpms_force_level(dpms.DPMSModeOff)
                     self.disp.sync()
@@ -655,12 +664,12 @@ class MonitorTop(mqtt.Client):
 
         # transitions
         if self.mtstate == self.MTState.PLAYING:
-            if self.screen_off.is_set():
+            if self.bools[self.BLIndex.SCREEN_OFF]:
                 self.mtstate = self.MTState.STOPPED
         elif self.mtstate == self.MTState.RESTART:
             self.mtstate = self.MTState.PLAYING
         elif self.mtstate == self.MTState.STOPPED:
-            if not self.screen_off.is_set():
+            if self.bools[self.BLIndex.SCREEN_OFF] is False:
                 self.mtstate = self.MTState.PLAYING
 
 
@@ -696,14 +705,14 @@ class MonitorTop(mqtt.Client):
 
         # X11
         try:
-            self.pm_able = self.disp.dpms_capable()
+            self.bools[self.BLIndex.PM_ABLE] = self.disp.dpms_capable()
         except ValueError:
             pass
-        if not self.pm_able:
+        if not self.bools[self.BLIndex.PM_ABLE]:
             logging.warning("Display is not DPMS capable.")
-        logging.debug(f"DPMS capable: {self.pm_able}")
+        logging.debug(f"DPMS capable: {self.bools[self.BLIndex.PM_ABLE]}")
 
-        if self.pm_able:
+        if self.bools[self.BLIndex.PM_ABLE]:
             logging.debug("Configuring DPMS.")
             # disable screensaver
             #  timeout (setting timeout to 0 disables the screensaver)
