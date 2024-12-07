@@ -1,0 +1,14 @@
+{
+	"name": "secmon",
+    	"urls": [
+		"rtsp://maglab:magcat@connor.maglab:8554/Camera1_sub",
+		"rtsp://maglab:magcat@connor.maglab:8554/Camera2_sub"
+	],
+	"tokens": [
+        	"magld_Buudgip.dgpfgbdh8fuGfgionthNNCNNNiucgpspsdgu"
+	],
+	"mqtt_broker": "hal.maglab",
+	"mqtt_port": 1883,
+	"mqtt_timeout": 60,
+	"loglevel": "debug"
+}
