@@ -602,6 +602,7 @@ class MonitorTop(mqtt.Client):
             logging.info("Checkup requested.")
             dict_msg = {}
             dict_msg[f"{self.config.name} On"] = int(not self.bools[self.BLIndex.SCREEN_OFF])
+            logging.info("Checkup message: {dict_msg}")
             self.publish(f"{self.config.name}/checkup", json.dumps(dict_msg))
         elif msg.topic == "secmon00/cmd":
             # do
