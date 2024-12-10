@@ -105,7 +105,7 @@ class Utils:
 
 class AutoMotionTimer(threading.Thread):
     """ Timer thread for monitor shutdown """
-    def __init__(self, bools, indices, functions):
+    def __init__(self, bools, indices, functions, timeout):
         # "super" init
         threading.Thread.__init__(self)
         # callbacks
@@ -115,17 +115,18 @@ class AutoMotionTimer(threading.Thread):
         self._bools = bools
         self._auto_idx = indices[0]
         self._in_idx = indices[1]
-        # my veriables
+        # my variables
         self._event = threading.Event()
+        # timeout
+        self._timeout = timeout
 
     def run(self):
         """
         main run function for the timer thread
-        triggers to turn the monitor off at limit
+        triggers to turn the monitor off at timeout
         """
         counter = 0
-        limit = 900
-        last = self._bools[self._auto_idx]
+        last_auto = self._bools[self._auto_idx]
         logging.debug("Automatic control start.")
         while not self._event.wait(1):
             # get input status and clear it
@@ -134,7 +135,7 @@ class AutoMotionTimer(threading.Thread):
                 self._bools[self._in_idx] = False
 
             # increment counter until limit
-            if counter < limit:
+            if counter < self._timeout:
                 counter += 1
 
             if self._bools[self._auto_idx]:
@@ -145,14 +146,14 @@ class AutoMotionTimer(threading.Thread):
                     self._on_fun()
                 # turn off the screen
                 # or turn back to a known-on state if we are resuming automatic control
-                if counter >= limit:
+                if counter >= self._timeout:
                     # screen off
                     self._off_fun()
-                elif last is False:
+                elif last_auto is False:
                     # screen on
                     self._on_fun()
 
-            last = self._bools[self._auto_idx]
+            last_auto = self._bools[self._auto_idx]
 
         logging.debug("Automatic control stop.")
 
@@ -487,7 +488,7 @@ class MonitorTop(mqtt.Client):
 
         # automatic control
         self.amt = AutoMotionTimer(self.bools, [self.BLIndex.AUTO, self.BLIndex.MOTION],
-                [self.mon_on, self.mon_off])
+                [self.mon_on, self.mon_off], self.config.auto_timeout)
 
         mqtt.Client.__init__(self, mqtt.CallbackAPIVersion.VERSION2)
 
@@ -503,7 +504,12 @@ class MonitorTop(mqtt.Client):
         mqtt_port: Optional[int] = 1883
         mqtt_timeout: Optional[int] = 60
         splitter_refresh_rate: Optional[int] = 300
+        splitter_div_mode: Optional[int] = 1
         loglevel: Optional[str] = None
+        max_cmd_delta: Optional[int] = 7200
+        auto_timeout: Optional[int] = 500
+        event_host: Optional[str] = "daisy"
+        event: Optional[str] = "ConfRm Motion"
 
     # overloaded MQTT on_connect function
     def on_connect(self, _, __, ___, reason, ____):
@@ -511,8 +517,7 @@ class MonitorTop(mqtt.Client):
         logging.info(f"MQTT connected: {reason}")
         self.subscribe("reporter/checkup_req")
         self.subscribe("secmon00/cmd")
-        self.subscribe("daisy/event")
-        self.subscribe("daisy/checkup")
+        self.subscribe(f"{self.config.event_host}/+")
 
     def msg_auth(self, msg, code):
         """ message authentication function """
@@ -548,7 +553,7 @@ class MonitorTop(mqtt.Client):
                 diff_time = current_time - sent_time
                 logging.debug(f"Current time: {current_time}, Sent time: {sent_time}, "\
                         f"Time Diff: {diff_time}")
-                assert abs(diff_time) <= 7200
+                assert abs(diff_time) <= self.config.max_cmd_delta
 
                 self.msg_auth(matches[1], matches[2])
                 # handle restarting
@@ -613,7 +618,7 @@ class MonitorTop(mqtt.Client):
             decoded = msg.payload.decode('utf-8')
             logging.debug(f"Daisy message received: {decoded}")
             data = json.loads(decoded)
-            if "ConfRm Motion" in data and data["ConfRm Motion"] == 1:
+            if self.config.event in data and data[self.config.event] == 1:
                 logging.info("Received motion.")
                 self.bools[self.BLIndex.MOTION] = True
 
@@ -642,7 +647,8 @@ class MonitorTop(mqtt.Client):
         # execution
         if self.mtstate == self.MTState.PLAYING:
             Utils.clear_queue(self.stop_playing)
-            sm2 = SecurityMonitor(self.stop_playing, self.config.splitter_refresh_rate, 1)
+            sm2 = SecurityMonitor(self.stop_playing, self.config.splitter_refresh_rate,
+                    self.config.splitter_div_mode)
             sm2.urls = self.config.urls
             if self.bools[self.BLIndex.PM_ABLE]:
                 logging.info("Turning Screen ON.")
@@ -734,9 +740,6 @@ class MonitorTop(mqtt.Client):
 
         logging.info("Starting MQTT.")
         # connect MQTT
-        #  host hal.maglab
-        #  port 1883 (default)
-        #  timeout 60
         self.connect(self.config.mqtt_broker, self.config.mqtt_port, self.config.mqtt_timeout)
         self.loop_start()
 
