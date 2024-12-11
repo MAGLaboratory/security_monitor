@@ -9,7 +9,7 @@ The program is written with a goal to provide a video wall for the space.
 
 There are three command inputs for video wall on/off including:
     - PIR
-    - UDP app
+    - UDP (app)
     - MQTT
 
 This program makes extensive use of the python-mpv library.
@@ -48,6 +48,8 @@ class Utils:
     """
     This class contains utilities for token management and command message validation.
     Both MQTT and UDP should provide the same messages for validation.
+
+    Also, one function for removing items from a queue is provided.
     """
     START = "magld_"
     MINCTLEN = 2
@@ -109,16 +111,21 @@ class AutoMotionTimer(threading.Thread):
         # "super" init
         threading.Thread.__init__(self)
         # callbacks
+        # note that the order goes On/Off
+        # in the digital electronics world, this could be considered active-low
         self._on_fun = functions[0]
         self._off_fun = functions[1]
         # input
+        # since it is not possible to create pointer references in python, let's use a worse way:
+        # reference by integer position!
         self._bools = bools
         self._auto_idx = indices[0]
         self._in_idx = indices[1]
-        # my variables
-        self._event = threading.Event()
         # timeout
+        # self explanatory
         self._timeout = timeout
+        # class exit variable
+        self._event = threading.Event()
 
     def run(self):
         """
@@ -188,6 +195,7 @@ class UDPListen(threading.Thread):
             read, _, _ = select.select(self._inputs, [], [], 1)
             for sel_fd in read:
                 if self._sock is not None and sel_fd == self._sock:
+                    # guilty until proven innocent
                     response = "NO"
                     try:
                         data, addr = self._sock.recvfrom(1024)
@@ -641,7 +649,11 @@ class MonitorTop(mqtt.Client):
         self.monitor_exit.set()
 
     def _mt_loop(self):
-        """ main function helper loop, also the state machine """
+        """
+        main function helper loop, also the state machine
+        note that this is where the screen state is controlled.
+        the functions mon_on and mon_off just set flags that this function follows
+        """
         if self.mtstate != self.last_mtstate:
             logging.debug(f"Montior Loop State: {self.mtstate}")
         # execution
@@ -655,6 +667,7 @@ class MonitorTop(mqtt.Client):
                 self.disp.dpms_force_level(dpms.DPMSModeOn)
                 self.disp.sync()
             logging.info("Calling Splitter.")
+            # blocking while executing.  unblocked with the queue.
             sm2.main()
         #  restart or stopped
         if self.mtstate == self.MTState.STOPPED:
@@ -758,8 +771,10 @@ class MonitorTop(mqtt.Client):
         logging.info("Stopping automatic control.")
         self.amt.stop()
 
-        logging.info("Turning screen on.")
-        self.mon_on()
+        if self.bools[self.BLIndex.PM_ABLE]:
+            logging.info("Turning Screen ON.")
+            self.disp.dpms_force_level(dpms.DPMSModeOn)
+            self.disp.sync()
 
         logging.info("Stopping UDP.")
         self.udp.stop()

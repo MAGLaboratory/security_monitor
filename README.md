@@ -31,7 +31,7 @@ In manual mode, on and off is controlled by messaging through either MQTT or UDP
 ### Message Format
 This section provides a short overview of how the messages for decoding look.
 A tuple-looking message is received: `(<message>,<hmac>)`
-The `<message>` is data in JSON.  The `<hmac>` is base64.
+The `<message>` is data in JSON and utf-8.  The `<hmac>` is base64.
 
 #### Message Processing
 The root element of the JSON message is a dictionary of keys and values.
@@ -57,10 +57,10 @@ This is a list of non-default python packages that may need to be downloaded for
 Modify startup applications in xfce to include this python script either with or without a terminal emulator attached.
 
 ## Configuration
-TODO
+An example configuration file will be provided.
 
 ## Help
-Please leave a Github issue.
+Please leave a Github issue or email the default MAG Laboratory contact at maglaboratory dot org.
 
 ## Authors
 * @blu006
