@@ -5,12 +5,8 @@
 A bit of software to display a video wall using MPV.  This package is primarily intended for displaying rtsp streams from IP cameras.
 
 ## Branch Description
-This branch exists for initial development of the security monitor.  The exit of initial development will likely be the the addition of configurable items for:
-* automatic control
-* UDP ip / port
-* URLs
-* screen divisions
-* screen "on" input
+This branch exists for initial development of the security monitor.  The exit of initial development will likely be the groundwork for future updates with app-configurable view URL's:
+* Indexable URLs for screen divisions
 
 ## Description
 This software mainly controls a video wall made of MPV instances.  There are three interfaces that control how the MPV instances run:
