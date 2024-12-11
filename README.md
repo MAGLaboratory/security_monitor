@@ -22,6 +22,9 @@ There are two modes in which the wall is controlled:
 * automatic 
 * manual
 
+### MQTT Event (PIR)
+The MQTT event looks for an `int` not equal to zero on the configured event to trigger the screen.
+
 ### Automatic Mode
 In automatic mode, a motion event triggers the system to stay on for a period of time.
 
@@ -49,7 +52,7 @@ A `force` boolean value controls whether the monitor is on / off.  Receiving a v
 ## Dependencies
 This is a list of non-default python packages that may need to be downloaded for this software to work:
 * python-mpv
-* Xlib
+* python-xlib
 * paho-mqtt
 * dataclasses-json
 
@@ -69,7 +72,7 @@ Please leave a Github issue or email the default MAG Laboratory contact at magla
 TODO
 
 ## License
-Public Domain
+MIT-0
 
 ## Acknowledgements
 Thanks to Andrew Rowson for explaining why this program kept deadlocking: https://www.growse.com/2018/04/23/python-multiprocessing-challenges.html 

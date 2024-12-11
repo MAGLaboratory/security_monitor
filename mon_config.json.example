@@ -7,8 +7,10 @@
 	"tokens": [
         	"magld_Buudgip.dgpfgbdh8fuGfgionthNNCNNNiucgpspsdgu"
 	],
+	"event_host": "daisy",
+	"event": "ConfRm Motion",
 	"mqtt_broker": "hal.maglab",
 	"mqtt_port": 1883,
 	"mqtt_timeout": 60,
-	"loglevel": "debug"
+	"loglevel": "info"
 }

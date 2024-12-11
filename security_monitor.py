@@ -508,6 +508,8 @@ class MonitorTop(mqtt.Client):
         name: str
         urls: list[str]
         tokens: list[str]
+        event_host: str
+        event: str
         mqtt_broker: str
         mqtt_port: Optional[int] = 1883
         mqtt_timeout: Optional[int] = 60
@@ -516,8 +518,6 @@ class MonitorTop(mqtt.Client):
         loglevel: Optional[str] = None
         max_cmd_delta: Optional[int] = 7200
         auto_timeout: Optional[int] = 500
-        event_host: Optional[str] = "daisy"
-        event: Optional[str] = "ConfRm Motion"
 
     # overloaded MQTT on_connect function
     def on_connect(self, _, __, ___, reason, ____):
@@ -626,7 +626,7 @@ class MonitorTop(mqtt.Client):
             decoded = msg.payload.decode('utf-8')
             logging.debug(f"Daisy message received: {decoded}")
             data = json.loads(decoded)
-            if self.config.event in data and data[self.config.event] == 1:
+            if self.config.event in data and data[self.config.event] != 0:
                 logging.info("Received motion.")
                 self.bools[self.BLIndex.MOTION] = True
 
