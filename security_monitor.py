@@ -242,6 +242,7 @@ class SecurityMonitor():
 
         self.que = [multiprocessing.Queue() for _ in range(self._div[2]*2)]
         self.proc = [None] * (self._div[2]*2)
+        self.url_idx = list(range(self._div[2]))
 
     # Helper Functions
     # generate position string based on divisions and index
@@ -316,7 +317,7 @@ class SecurityMonitor():
 
     # this process actually contains the mpv stream player
     def _play_process(self, queue_in, queue_out, name):
-        idx = name % self._div[2]
+        idx = self.url_idx[name % self._div[2]]
         geo_str = self._gen_geo_str(idx)
         player = mpv.MPV()
         # a series of configuration options that make the player act like a
@@ -377,7 +378,7 @@ class SecurityMonitor():
             # state where the players are initializing
             i_play = last_p
             last_p = (last_p + self._div[2]) % (self._div[2] * 2)
-        logging.info(f"Starting player: {i_play}")
+        logging.debug(f"Starting player: {i_play}")
         self.proc[i_play] = multiprocessing.Process(target=self._play_process, args=(
             self.que[i_play],
             self.que[last_p],
@@ -550,6 +551,7 @@ class MonitorTop(mqtt.Client):
         And the HMAC output is b64 encoded.
         """
         retval = 1
+        logging.debug(f"Received in command channel: {cmd}")
         matches = re.fullmatch(r"\((\{.+\})\, (.+)\)", cmd)
         if matches is not None:
             logging.debug(f"The split strings are: {matches[1]} and {matches[2]}")
@@ -573,6 +575,7 @@ class MonitorTop(mqtt.Client):
                         retval = 0
                 # handle automatic mode
                 elif "auto" in data and data["auto"] is True:
+                    logging.info("Received automatic mode enable.")
                     self.bools[self.BLIndex.AUTO] = True
                     retval = 0
                 elif "force" in data:
@@ -615,16 +618,16 @@ class MonitorTop(mqtt.Client):
             logging.info("Checkup requested.")
             dict_msg = {}
             dict_msg[f"{self.config.name} On"] = int(not self.bools[self.BLIndex.SCREEN_OFF])
-            logging.info("Checkup message: {dict_msg}")
+            logging.debug(f"Checkup message: {dict_msg}")
             self.publish(f"{self.config.name}/checkup", json.dumps(dict_msg))
         elif msg.topic == "secmon00/cmd":
             # do
             decoded = msg.payload.decode('utf-8')
             logging.info(f"Display Commanded: {decoded}")
             self.cmd_msg_apply(decoded)
-        elif msg.topic.startswith("daisy"):
+        elif msg.topic.startswith(self.config.event_host):
             decoded = msg.payload.decode('utf-8')
-            logging.debug(f"Daisy message received: {decoded}")
+            logging.debug(f"Motion message received: {decoded}")
             data = json.loads(decoded)
             if self.config.event in data and data[self.config.event] != 0:
                 logging.info("Received motion.")
