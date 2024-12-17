@@ -525,7 +525,7 @@ class MonitorTop(mqtt.Client):
         # pylint: disable=invalid-overridden-method, arguments-differ
         logging.info(f"MQTT connected: {reason}")
         self.subscribe("reporter/checkup_req")
-        self.subscribe("secmon00/cmd")
+        self.subscribe(f"{self.config.name}/cmd")
         self.subscribe(f"{self.config.event_host}/+")
 
     def msg_auth(self, msg, code):
@@ -620,7 +620,7 @@ class MonitorTop(mqtt.Client):
             dict_msg[f"{self.config.name} On"] = int(not self.bools[self.BLIndex.SCREEN_OFF])
             logging.debug(f"Checkup message: {dict_msg}")
             self.publish(f"{self.config.name}/checkup", json.dumps(dict_msg))
-        elif msg.topic == "secmon00/cmd":
+        elif msg.topic == f"{self.config.name}/cmd":
             # do
             decoded = msg.payload.decode('utf-8')
             logging.info(f"Display Commanded: {decoded}")
