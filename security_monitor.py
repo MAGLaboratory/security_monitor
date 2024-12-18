@@ -719,9 +719,9 @@ class MonitorTop(mqtt.Client):
             except AssertionError:
                 logging.error("Token not accepted")
         if self._tokens:
-            logging.critical("No tokens accepted.")
-        else:
             logging.debug("Tokens decoded")
+        else:
+            logging.critical("No tokens accepted.")
 
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
