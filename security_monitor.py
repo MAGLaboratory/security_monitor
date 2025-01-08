@@ -628,10 +628,13 @@ class MonitorTop(mqtt.Client):
         elif msg.topic.startswith(self.config.event_host):
             decoded = msg.payload.decode('utf-8')
             logging.debug(f"Motion message received: {decoded}")
-            data = json.loads(decoded)
-            if self.config.event in data and data[self.config.event] != 0:
-                logging.info("Received motion.")
-                self.bools[self.BLIndex.MOTION] = True
+            try:
+                data = json.loads(decoded)
+                if self.config.event in data and data[self.config.event] != 0:
+                    logging.info("Received motion.")
+                    self.bools[self.BLIndex.MOTION] = True
+            except ValueError:
+                logging.info("JSON decode failed.")
 
     def on_log(self, _, __, level, string):
         # pylint: disable=invalid-overridden-method, arguments-differ
