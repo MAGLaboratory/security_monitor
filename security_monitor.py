@@ -413,6 +413,8 @@ class SecurityMonitor():
                     if self.proc[p_cnt].exitcode is None:
                         logging.error(f"Killing stuck player {p_cnt}")
                         self.proc[p_cnt].kill()
+                    else:
+                        logging.debug(f"Successfully joined {p_cnt}")
                     p_cnt = (p_cnt + 1) % (self._div[2]*2)
                 try:
                     _ = self._queue_all.get(timeout=1)
