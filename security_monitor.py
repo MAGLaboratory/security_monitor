@@ -103,7 +103,11 @@ class Utils:
     def clear_queue(quu):
         """ This helper clears a queue"""
         while not quu.empty():
-            _ = quu.get()
+            logging.debug("Utility clearing queue")
+            try:
+                _ = quu.get_nowait()
+            except queue.Empty:
+                logging.info("Utility queue clear returned empty.")
 
 class AutoMotionTimer(threading.Thread):
     """ Timer thread for monitor shutdown """
@@ -155,9 +159,11 @@ class AutoMotionTimer(threading.Thread):
                 # or turn back to a known-on state if we are resuming automatic control
                 if counter >= self._timeout:
                     # screen off
+                    logging.info("Automatic motion timer turning screen off")
                     self._off_fun()
                 elif last_auto is False:
                     # screen on
+                    logging.info("Automatic motion timer turning screen on")
                     self._on_fun()
 
             last_auto = self._bools[self._auto_idx]
@@ -336,7 +342,7 @@ class SecurityMonitor():
         # timeout added here to terminate if the URL is not found
         try:
             logging.debug(f"Waiting for player {name} to start...")
-            player.wait_until_playing(timeout=30)
+            player.wait_until_playing(timeout=15)
         # set the output event to terminate the player behind this one
         # pylint: disable-next=broad-exception-caught
         except Exception as exc:
@@ -386,7 +392,12 @@ class SecurityMonitor():
         self.proc[i_play].daemon = True
         # clear the queue
         while not self.que[i_play].empty():
-            _ = self.que[i_play].get()
+            logging.debug("Cleaning queue for player {i_play}")
+            # the original get() caused a deadlock
+            try:
+                _ = self.que[i_play].get_nowait()
+            except queue.Empty:
+                logging.info("Blocked queue for player {i_play{")
         self.proc[i_play].start()
         logging.info(f"Player process started: {i_play}")
 
