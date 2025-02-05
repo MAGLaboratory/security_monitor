@@ -107,7 +107,7 @@ class Utils:
             try:
                 _ = quu.get_nowait()
             except queue.Empty:
-                logging.info("Utility queue clear returned empty.")
+                logging.error("Utility queue clear on a supposedly non-empty returned empty.")
 
 class AutoMotionTimer(threading.Thread):
     """ Timer thread for monitor shutdown """
@@ -392,12 +392,12 @@ class SecurityMonitor():
         self.proc[i_play].daemon = True
         # clear the queue
         while not self.que[i_play].empty():
-            logging.debug("Cleaning queue for player {i_play}")
+            logging.debug(f"Cleaning queue for player {i_play}")
             # the original get() caused a deadlock
             try:
                 _ = self.que[i_play].get_nowait()
             except queue.Empty:
-                logging.info("Blocked queue for player {i_play{")
+                logging.error(f"Attempt to read non-empty queue for player {i_play} returned empty")
         self.proc[i_play].start()
         logging.info(f"Player process started: {i_play}")
 
