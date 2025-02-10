@@ -354,7 +354,7 @@ class SecurityMonitor():
 
         while True:
             try:
-                _ = queue_in.get(timeout=1)
+                _ = queue_in.get()
                 # if the queue returns actual data, shut down this thread
                 break
             except queue.Empty:
@@ -392,10 +392,10 @@ class SecurityMonitor():
         self.proc[i_play].daemon = True
         # clear the queue
         while not self.que[i_play].empty():
-            logging.debug(f"Cleaning queue for player {i_play}")
+            logging.debug(f"Cleaning queue for player {i_play} before starting")
             # the original get() caused a deadlock
             try:
-                _ = self.que[i_play].get_nowait()
+                _ = self.que[i_play].get()
             except queue.Empty:
                 logging.error(f"Attempt to read non-empty queue for player {i_play} returned empty")
         self.proc[i_play].start()
