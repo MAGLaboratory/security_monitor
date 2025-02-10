@@ -246,7 +246,7 @@ class SecurityMonitor():
         self._queue_all = quit_queue
         self._div = self.calc_div(div_idx)
 
-        self.que = [multiprocessing.Queue() for _ in range(self._div[2]*2)]
+        self.que = [multiprocessing.SimpleQueue() for _ in range(self._div[2]*2)]
         self.proc = [None] * (self._div[2]*2)
         self.url_idx = list(range(self._div[2]))
 
