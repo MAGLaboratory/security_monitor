@@ -159,7 +159,9 @@ class AutoMotionTimer(threading.Thread):
                 # or turn back to a known-on state if we are resuming automatic control
                 if counter >= self._timeout:
                     # screen off
-                    logging.info("Automatic motion timer turning screen off")
+                    if counter == self._timeout:
+                        logging.info("Automatic motion timer turning screen off")
+                        counter += 1
                     self._off_fun()
                 elif last_auto is False:
                     # screen on
