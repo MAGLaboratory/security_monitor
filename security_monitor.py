@@ -36,7 +36,7 @@ import time
 import copy
 import queue
 from enum import IntEnum
-from typing import Optional
+from typing import Optional, NamedTuple
 from dataclasses import dataclass
 from dataclasses_json import dataclass_json
 import mpv
@@ -232,9 +232,24 @@ class UDPListen(threading.Thread):
         self._sock.close()
 
 class SecurityMonitor():
-    """ Security Monitor Windowing and Splitting """
+    """ 
+    Security Monitor Windowing and Splitting
+
+    This class spawns and refreshes the video wall.
+
+    Through testing, it was found that permanent single players are not
+    reliable. So, this class uses hot-staging in order to spawn players before
+    bottom players are stopped and cleaned.
+
+    """
     urls = ["rtsp://maglab:magcat@connor.maglab:8554/Camera1_sub",
             "rtsp://maglab:magcat@connor.maglab:8554/Camera2_sub"]
+
+    class Div(NamedTuple):
+        """ Storage for calculated video wall geometry """
+        col: int
+        row: int
+        num: int
 
     # initialize with an event and division index
     #  sample division indices to divisions:
@@ -246,11 +261,13 @@ class SecurityMonitor():
     def __init__(self, quit_queue, splitter_refresh_rate, div_idx):
         self.refresh_rate = splitter_refresh_rate
         self._queue_all = quit_queue
+        # self._div is a three-element list consisting of
+        # `columns`, `rows`, and `total players`
         self._div = self.calc_div(div_idx)
 
-        self.que = [multiprocessing.SimpleQueue() for _ in range(self._div[2]*2)]
-        self.proc = [None] * (self._div[2]*2)
-        self.url_idx = list(range(self._div[2]))
+        self.que = [multiprocessing.SimpleQueue() for _ in range(self._div.num*2)]
+        self.proc = [None] * (self._div.num*2)
+        self.url_idx = list(range(self._div.num))
 
     # Helper Functions
     # generate position string based on divisions and index
@@ -272,24 +289,24 @@ class SecurityMonitor():
     def _gen_geo_str(self, idx):
         # divisions
         # must be greater than 0
-        assert self._div[0] > 0
-        assert self._div[1] > 0
+        assert self._div.col > 0
+        assert self._div.row > 0
         # must have columns and rows in division
         assert len(self._div) == 3
 
         # position
         # calculate column and row
-        col_div = self._div[0]
-        row_div = self._div[1]
+        col_div = self._div.col
+        row_div = self._div.row
         [col_pos, row_pos] = self._idx2pos(idx)
         # positions must be less than divisions
-        assert col_pos < self._div[0]
-        assert row_pos < self._div[1]
+        assert col_pos < self._div.col
+        assert row_pos < self._div.row
 
         # column width calculation
-        geo_str=f"{100//self._div[0]}%"
+        geo_str=f"{100//self._div.col}%"
         # row width calculation
-        geo_str=f"{geo_str}x{100//self._div[1]}%"
+        geo_str=f"{geo_str}x{100//self._div.row}%"
         # column position
         geo_str += self._gen_pos(col_div, col_pos)
         # row position
@@ -297,8 +314,7 @@ class SecurityMonitor():
 
         return geo_str
 
-    @staticmethod
-    def calc_div(index):
+    def calc_div(self, index):
         """ 
         calculate number of divisions based on a magic index number
         returns : a three-element list consisting of columns, rows, and total players
@@ -316,16 +332,16 @@ class SecurityMonitor():
                 row += 1
 
         # final element is the total number of players visible
-        return [col, row, col * row]
+        return self.Div(col, row, col * row)
 
     # index to position.  position is a tuple.
     def _idx2pos(self, idx):
-        assert idx < self._div[2]
-        return [idx % self._div[0], idx // self._div[0]]
+        assert idx < self._div.num
+        return [idx % self._div.col, idx // self._div.col]
 
     # this process actually contains the mpv stream player
-    def _play_process(self, queue_in, queue_out, name):
-        idx = self.url_idx[name % self._div[2]]
+    def _play_process(self, queue_in, queue_out, p_idx):
+        idx = self.url_idx[p_idx % self._div.num]
         geo_str = self._gen_geo_str(idx)
         player = mpv.MPV()
         # a series of configuration options that make the player act like a
@@ -343,15 +359,15 @@ class SecurityMonitor():
         # wait until the player is playing
         # timeout added here to terminate if the URL is not found
         try:
-            logging.debug(f"Waiting for player {name} to start...")
+            logging.debug(f"Waiting for player {p_idx} to start...")
             player.wait_until_playing(timeout=15)
         # set the output event to terminate the player behind this one
         # pylint: disable-next=broad-exception-caught
         except Exception as exc:
-            logging.error(f"Player {name} stopped while waiting to start playing: {str(exc)}")
+            logging.error(f"Player {p_idx} stopped while waiting to start playing: {str(exc)}")
             player.terminate()
         finally:
-            logging.debug(f"Asking player below {name} to end.")
+            logging.debug(f"Asking player below {p_idx} to end.")
             queue_out.put(True)
 
         while True:
@@ -371,7 +387,7 @@ class SecurityMonitor():
                     # pylint: disable-next=lost-exception
                     break
 
-        logging.info(f"Player {name} stopping.")
+        logging.info(f"Player {p_idx} stopping.")
         player.terminate()
         del player
 
@@ -379,19 +395,21 @@ class SecurityMonitor():
     def _handle_player(self, last_p, running = True):
         # inital player logic
         if running:
-            # self._div[2] is the number of players visible.
-            # the actual number of players is self._div[2] * 2
-            i_play = (last_p + self._div[2]) % (self._div[2] * 2)
+            # spawn a replacement player
+            # the index calculation is last_p + self._div.num + 1 - 1
+            # the +1 is for the next player, the -1 is because of zero-indexing
+            i_play = (last_p + self._div.num) % (self._div.num * 2)
         else:
             # state where the players are initializing
             i_play = last_p
-            last_p = (last_p + self._div[2]) % (self._div[2] * 2)
+            last_p = (last_p + self._div.num) % (self._div.num * 2)
         logging.debug(f"Starting player: {i_play}")
         self.proc[i_play] = multiprocessing.Process(target=self._play_process, args=(
             self.que[i_play],
             self.que[last_p],
             i_play))
         self.proc[i_play].daemon = True
+        self.proc[i_play].name = f"Player {i_play}"
         # clear the queue
         while not self.que[i_play].empty():
             logging.debug(f"Cleaning queue for player {i_play} before starting")
@@ -406,11 +424,11 @@ class SecurityMonitor():
     def main(self):
         """ main / run function within the class """
         logging.info("Starting security monitor")
-        assert len(self.urls) >= self._div[2]
+        assert len(self.urls) >= self._div.num
 
         try:
             # start initial players
-            for i in range(self._div[2]):
+            for i in range(self._div.num):
                 self._handle_player(i, False)
             time_cnt = 0
             p_cnt = 0
@@ -428,7 +446,7 @@ class SecurityMonitor():
                         self.proc[p_cnt].kill()
                     else:
                         logging.debug(f"Successfully joined {p_cnt}")
-                    p_cnt = (p_cnt + 1) % (self._div[2]*2)
+                    p_cnt = (p_cnt + 1) % (self._div.num*2)
                 try:
                     _ = self._queue_all.get(timeout=1)
                     # if the queue returns data, shut everything down
