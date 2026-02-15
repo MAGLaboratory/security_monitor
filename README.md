@@ -46,7 +46,7 @@ A `force` boolean value controls whether the monitor is on / off.  Receiving a v
 
 ## Dependencies
 This is a list of non-default python packages that may need to be downloaded for this software to work:
-* python-mpv
+* mpv
 * python-xlib
 * paho-mqtt
 * dataclasses-json
