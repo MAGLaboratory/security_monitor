@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Security Monitor
+Exec=/usr/bin/xterm -e screen python3 /home/mon/security_monitor/security_monitor.py
+Icon=video-display
+Hidden=false
+Comment=Runs the security monitor / video wall application
+RunHook=0
+

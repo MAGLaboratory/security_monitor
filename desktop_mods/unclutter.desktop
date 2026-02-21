@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Unclutter
+Exec=/usr/bin/unclutter
+Hidden=false
+Comment=
+RunHook=0
